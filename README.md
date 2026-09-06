@@ -11,6 +11,17 @@ POCO F7 Ultra などの Android 端末で、Camera2 API が公開しているカ
 - Logical rear camera に 3 個以上の Physical Camera がある場合、3 Physical Camera 同時 640x480 プレビューを試行
 - 実行ログを画面内に表示
 
+## 実機テスト手順
+
+1. GitHub Actions の `Build APK` から `Camera2-Probe-debug` artifact を取得してインストール
+2. カメラ権限を許可
+3. `SCAN` を実行
+4. `Logical rear ID` と 3 個以上の `physicalIds` が表示されるか確認
+5. 候補が見つかったら `START 3-CAM` を押す
+6. 3画面が同時に動き、ログに `TRIPLE SESSION: SUCCESS` が出れば公開 Camera2 API だけで3物理カメラ同時ストリームが成立
+
+失敗した場合も `CONFIGURE FAILED`、CameraDevice error、公開された physical IDs / concurrent sets がログに残るため、次の実装方針を判断できます。
+
 ## 目的
 
 POCO F7 Ultra の超広角・メイン・望遠を Android の公開 Camera2 API から同時利用できるかを推測ではなく実機で確認します。
