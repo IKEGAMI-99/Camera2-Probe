@@ -34,24 +34,21 @@
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_marginEnd="3dp"
-            android:layout_weight="1"
-            android:background="#111111" />
+            android:layout_weight="1" />
 
         <TextureView
             android:id="@+id/preview2"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_marginHorizontal="3dp"
-            android:layout_weight="1"
-            android:background="#111111" />
+            android:layout_weight="1" />
 
         <TextureView
             android:id="@+id/preview3"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_marginStart="3dp"
-            android:layout_weight="1"
-            android:background="#111111" />
+            android:layout_weight="1" />
     </LinearLayout>
 
     <TextView
