@@ -4,13 +4,12 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
     <application
-        android:name=".TripleCamApplication"
         android:allowBackup="true"
         android:label="TRI // CAM"
         android:supportsRtl="true"
         android:theme="@style/Theme.TripleCam">
         <activity
-            android:name=".MainActivity"
+            android:name=".TriCamActivity"
             android:exported="true"
             android:screenOrientation="portrait">
             <intent-filter>
