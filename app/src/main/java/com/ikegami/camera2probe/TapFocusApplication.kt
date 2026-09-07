@@ -72,8 +72,14 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
             if (event.action != MotionEvent.ACTION_UP) return@setOnTouchListener true
             if (view.width <= 0 || view.height <= 0) return@setOnTouchListener true
 
-            val nx = (event.x / view.width.toFloat()).coerceIn(0f, 1f)
-            val ny = (event.y / view.height.toFloat()).coerceIn(0f, 1f)
+            // Preview is center-cropped to preserve 16:9. Map the visible point back through that
+            // crop so AF/AE lands on the object the user actually touched.
+            val (nx, ny) = PreviewAspectController.mapTap(
+                view.width,
+                view.height,
+                event.x,
+                event.y
+            )
             showFocusRing(frame, event.x, event.y, physicalIndex)
             requestTapFocus(activity, physicalIndex, nx, ny)
             true
@@ -104,7 +110,6 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
 
             handler.post {
                 try {
-                    // Cancel a previous single-shot AF lock so repeated taps always start a fresh scan.
                     if (afRequired) {
                         val cancel = buildPreviewRequest(
                             activity, camera, surfaces, physicalIds, afModeById,
@@ -115,7 +120,6 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
                         session.capture(cancel, null, handler)
                     }
 
-                    // One-shot trigger. For fixed focus this is AE metering only.
                     val trigger = buildPreviewRequest(
                         activity, camera, surfaces, physicalIds, afModeById,
                         tappedPid = pid, region = region, afRequired = afRequired,
@@ -124,8 +128,6 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
                     )
                     session.capture(trigger, null, handler)
 
-                    // Keep the tapped region active. AUTO keeps MAIN/TELE locked to the selected
-                    // point; other AF lenses continue normal continuous-picture focusing.
                     val repeating = buildPreviewRequest(
                         activity, camera, surfaces, physicalIds, afModeById,
                         tappedPid = pid, region = region, afRequired = afRequired,
@@ -140,7 +142,6 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
                                 request: CaptureRequest,
                                 result: TotalCaptureResult
                             ) {
-                                // Preserve the app's existing physical AF/AE/AWB diagnostics.
                                 invokeUpdate3A(activity, result)
                             }
                         },
@@ -217,8 +218,6 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
             }
         }
 
-        // Some vendor HALs do not expose AF/AE regions as physical request keys. Fall back to
-        // logical-camera regions so the tap still has useful behavior instead of silently doing nothing.
         if (useMetering && (!physicalAeRegionApplied || (afRequired && !physicalAfRegionApplied))) {
             val logicalId = getField<String?>(activity, "logicalRearId")
             if (logicalId != null) {
@@ -266,9 +265,9 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
         val stroke = (2.2f * density).roundToInt().coerceAtLeast(2)
         val ring = View(frame.context)
         val color = when (index) {
-            0 -> Color.rgb(55, 232, 255)  // ULTRA
-            1 -> Color.rgb(143, 105, 255) // MAIN
-            else -> Color.rgb(76, 255, 177) // TELE
+            0 -> Color.rgb(55, 232, 255)
+            1 -> Color.rgb(143, 105, 255)
+            else -> Color.rgb(76, 255, 177)
         }
         ring.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -295,9 +294,7 @@ class TapFocusApplication : Application(), Application.ActivityLifecycleCallback
             val m = TriCamActivity::class.java.getDeclaredMethod("update3AState", TotalCaptureResult::class.java)
             m.isAccessible = true
             m.invoke(activity, result)
-        } catch (_: Throwable) {
-            // Diagnostics are optional; focus operation itself does not depend on this callback.
-        }
+        } catch (_: Throwable) {}
     }
 
     @Suppress("UNCHECKED_CAST")
