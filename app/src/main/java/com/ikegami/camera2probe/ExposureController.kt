@@ -35,7 +35,7 @@ object ExposureController {
 
     fun install(activity: TriCamActivity) {
         if (panels.containsKey(activity)) {
-            apply(activity, currentEv(activity))
+            reapplySoon(activity)
             return
         }
         val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
@@ -117,7 +117,14 @@ object ExposureController {
             }
         )
         panels[activity] = panel
-        apply(activity, saved)
+        reapplySoon(activity)
+    }
+
+    fun reapplySoon(activity: TriCamActivity) {
+        val ev = currentEv(activity)
+        listOf(100L, 450L, 900L, 1600L).forEach { delay ->
+            activity.window.decorView.postDelayed({ apply(activity, ev) }, delay)
+        }
     }
 
     fun currentEv(activity: Activity): Float =
@@ -188,7 +195,7 @@ object ExposureController {
                 }
             }
         } catch (_: Throwable) {
-            // Camera may still be starting. The saved EV is applied again on the next resume/AF action.
+            // Camera may still be starting; scheduled retries will reapply this EV.
         }
     }
 
