@@ -25,8 +25,8 @@
 
     <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="140dp"
-        android:layout_marginTop="10dp"
+        android:layout_height="145dp"
+        android:layout_marginTop="8dp"
         android:orientation="horizontal">
 
         <TextureView
@@ -51,19 +51,100 @@
             android:layout_weight="1" />
     </LinearLayout>
 
-    <TextView
-        android:id="@+id/previewLabels"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/label1"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="ULTRA\nID --\n-- fps"
+            android:textColor="#89C79B"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/label2"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="MAIN\nID --\n-- fps"
+            android:textColor="#89C79B"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/label3"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="TELE\nID --\n-- fps"
+            android:textColor="#89C79B"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/resolutionText"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
         android:gravity="center"
-        android:text="Physical cameras: not selected"
-        android:textColor="#89C79B"
+        android:text="Selected: 640x480"
+        android:textColor="#D8FFE1"
         android:textSize="11sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:layout_marginTop="8dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/vgaButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:minHeight="42dp"
+            android:text="640×480"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/p720Button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="3dp"
+            android:layout_weight="1"
+            android:minHeight="42dp"
+            android:text="720P"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/p1080Button"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="3dp"
+            android:layout_weight="1"
+            android:minHeight="42dp"
+            android:text="1080P"
+            android:textSize="10sp" />
+
+        <Button
+            android:id="@+id/maxButton"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="3dp"
+            android:layout_weight="1"
+            android:minHeight="42dp"
+            android:text="MAX"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
         android:orientation="horizontal">
 
         <Button
@@ -86,12 +167,13 @@
         android:id="@+id/stopButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:minHeight="42dp"
         android:text="STOP CAMERA" />
 
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_marginTop="6dp"
+        android:layout_marginTop="4dp"
         android:layout_weight="1"
         android:background="#020402"
         android:fillViewport="true">
@@ -103,6 +185,6 @@
             android:padding="8dp"
             android:textColor="#70FF98"
             android:textIsSelectable="true"
-            android:textSize="11sp" />
+            android:textSize="10sp" />
     </ScrollView>
 </LinearLayout>
