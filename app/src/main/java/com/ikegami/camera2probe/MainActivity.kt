@@ -2,7 +2,9 @@ package com.ikegami.camera2probe
 
 import android.Manifest
 import android.app.Activity
+import android.content.ContentValues
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
@@ -11,98 +13,116 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.params.OutputConfiguration
 import android.hardware.camera2.params.SessionConfiguration
+import android.media.ImageReader
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
+import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
 import android.widget.Button
 import android.widget.TextView
+import java.io.File
+import java.io.FileOutputStream
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executor
-import kotlin.math.abs
 
 class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "Camera2Probe"
         private const val CAMERA_PERMISSION_REQUEST = 10
-        private const val APP_VERSION = "0.2.0"
+        private const val PREVIEW_WIDTH = 1920
+        private const val PREVIEW_HEIGHT = 1080
+        private const val FALLBACK_MAX_PIXELS = 12_500_000L
+        private const val CAPTURE_TIMEOUT_MS = 15_000L
     }
 
     private lateinit var cameraManager: CameraManager
     private lateinit var statusText: TextView
     private lateinit var logText: TextView
-    private lateinit var resolutionText: TextView
-    private lateinit var maxButton: Button
+    private lateinit var captureInfoText: TextView
     private lateinit var textureViews: List<TextureView>
-    private lateinit var cameraLabels: List<TextView>
+    private lateinit var lensLabels: List<TextView>
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var cameraThread: HandlerThread? = null
     private var cameraHandler: Handler? = null
-    private val mainHandler = Handler(Looper.getMainLooper())
-
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var activeSurfaces: List<Surface> = emptyList()
-    private var openingCamera = false
-    private var waitingForSurfaces = false
+    private var previewSurfaces: List<Surface> = emptyList()
+    private var imageReaders: List<ImageReader> = emptyList()
 
     private var logicalRearId: String? = null
-    private var selectedPhysicalIds: List<String> = emptyList()
-    private var selectedFocals: List<Float?> = emptyList()
-    private var commonOutputSizes: List<Size> = emptyList()
-    private var maxCommonSize: Size? = null
+    private var physicalIds: List<String> = emptyList()
+    private val focalById = mutableMapOf<String, Float>()
+    private val maxJpegById = mutableMapOf<String, Size>()
+    private val fallbackJpegById = mutableMapOf<String, Size>()
 
-    private var selectedSize = Size(640, 480)
-    private var selectedModeName = "VGA"
+    private var openingCamera = false
+    private var pendingPreviewOpen = false
+    private var previewRunning = false
+    private var capturing = false
+    private var usingFallbackCapture = false
 
-    private val frameCounts = LongArray(3)
-    private val lastFrameCounts = LongArray(3)
-    private val fpsValues = FloatArray(3)
-    private var fpsMonitoring = false
-    private var lastFpsSampleMs = 0L
+    private val frameCounters = LongArray(3)
+    private val lastFrameCounters = LongArray(3)
+    private var lastFpsTimeMs = 0L
+    private var fpsRunning = false
+
+    private val captureReceived = BooleanArray(3)
+    private val captureTimestampsNs = LongArray(3)
+    private val captureByteCounts = LongArray(3)
+    private var captureBatch = ""
+
+    private val lensNames = listOf("ULTRA", "MAIN", "TELE")
 
     private val fpsRunnable = object : Runnable {
         override fun run() {
-            if (!fpsMonitoring) return
-
+            if (!fpsRunning) return
             val now = SystemClock.elapsedRealtime()
-            val elapsedMs = (now - lastFpsSampleMs).coerceAtLeast(1L)
+            val elapsed = (now - lastFpsTimeMs).coerceAtLeast(1L) / 1000.0
+            val fps = DoubleArray(3)
             for (i in 0..2) {
-                val current = frameCounts[i]
-                val delta = current - lastFrameCounts[i]
-                fpsValues[i] = delta * 1000f / elapsedMs.toFloat()
-                lastFrameCounts[i] = current
+                val count = frameCounters[i]
+                fps[i] = (count - lastFrameCounters[i]) / elapsed
+                lastFrameCounters[i] = count
             }
-            lastFpsSampleMs = now
-            updateCameraLabels()
+            lastFpsTimeMs = now
+            updateLensLabels(fps)
             mainHandler.postDelayed(this, 1000L)
         }
     }
 
+    private val captureTimeoutRunnable = Runnable {
+        if (!capturing) return@Runnable
+        appendLog("CAPTURE TIMEOUT: received ${captureReceived.count { it }}/3 JPEGs")
+        setStatus("Capture timeout; restoring 1080p preview")
+        capturing = false
+        cameraHandler?.post { resumePreviewAfterCapture() }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         try {
             setContentView(R.layout.activity_main)
-
             statusText = findViewById(R.id.statusText)
             logText = findViewById(R.id.logText)
-            resolutionText = findViewById(R.id.resolutionText)
-            maxButton = findViewById(R.id.maxButton)
-
+            captureInfoText = findViewById(R.id.captureInfoText)
             textureViews = listOf(
                 findViewById(R.id.preview1),
                 findViewById(R.id.preview2),
                 findViewById(R.id.preview3)
             )
-            cameraLabels = listOf(
+            lensLabels = listOf(
                 findViewById(R.id.label1),
                 findViewById(R.id.label2),
                 findViewById(R.id.label3)
@@ -113,36 +133,19 @@ class MainActivity : Activity() {
             installTextureListeners()
 
             findViewById<Button>(R.id.scanButton).setOnClickListener { requestPermissionOrScan() }
-            findViewById<Button>(R.id.tripleButton).setOnClickListener { prepareTripleTest() }
+            findViewById<Button>(R.id.startButton).setOnClickListener { start1080Preview() }
+            findViewById<Button>(R.id.captureButton).setOnClickListener { startTripleCapture() }
             findViewById<Button>(R.id.stopButton).setOnClickListener { closeCamera("Stopped by user") }
 
-            findViewById<Button>(R.id.vgaButton).setOnClickListener {
-                selectPreset(640, 480, "VGA")
-            }
-            findViewById<Button>(R.id.p720Button).setOnClickListener {
-                selectPreset(1280, 720, "720P")
-            }
-            findViewById<Button>(R.id.p1080Button).setOnClickListener {
-                selectPreset(1920, 1080, "1080P")
-            }
-            maxButton.setOnClickListener { selectMaximumCommonResolution() }
-
-            statusText.text = "Ready. Tap SCAN to inspect Camera2."
-            logText.text = "Camera2 Probe v$APP_VERSION\n"
-            updateResolutionText()
-            updateCameraLabels()
-            appendLog("App started successfully")
-            appendLog("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-            appendLog("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-            appendLog("FPS meter counts actual TextureView buffer updates per camera.")
+            statusText.text = "Ready. SCAN first, then START 1080P."
+            logText.text = "Camera2 Probe v0.3.0\n"
+            appendLog("Preview fixed at 1920x1080 × 3")
+            appendLog("Capture mode: MAX JPEG per physical camera with ~12MP fallback")
         } catch (t: Throwable) {
             Log.e(TAG, "Fatal startup error", t)
-            try {
-                setContentView(android.R.layout.simple_list_item_1)
-                findViewById<TextView>(android.R.id.text1)?.text =
-                    "Camera2 Probe startup error\n${t.javaClass.simpleName}: ${t.message}"
-            } catch (_: Throwable) {
-            }
+            setContentView(android.R.layout.simple_list_item_1)
+            findViewById<TextView>(android.R.id.text1)?.text =
+                "Camera2 Probe startup error\n${t.javaClass.simpleName}: ${t.message}"
         }
     }
 
@@ -150,23 +153,18 @@ class MainActivity : Activity() {
         textureViews.forEachIndexed { index, view ->
             view.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
                 override fun onSurfaceTextureAvailable(surface: SurfaceTexture, width: Int, height: Int) {
-                    if (waitingForSurfaces && textureViews.all { it.isAvailable }) {
-                        waitingForSurfaces = false
-                        openTripleCamera()
+                    if (pendingPreviewOpen && textureViews.all { it.isAvailable }) {
+                        pendingPreviewOpen = false
+                        openPreviewCamera()
                     }
                 }
 
                 override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
 
-                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean {
-                    if (cameraDevice != null || openingCamera) {
-                        closeCamera("Preview surface destroyed")
-                    }
-                    return true
-                }
+                override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
 
                 override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
-                    frameCounts[index]++
+                    if (fpsRunning && index in 0..2) frameCounters[index]++
                 }
             }
         }
@@ -176,7 +174,6 @@ class MainActivity : Activity() {
         if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             scanCameras()
         } else {
-            appendLog("Requesting CAMERA permission...")
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
         }
     }
@@ -187,14 +184,10 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode != CAMERA_PERMISSION_REQUEST) return
-
-        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            appendLog("Camera permission: GRANTED")
+        if (requestCode == CAMERA_PERMISSION_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             scanCameras()
-        } else {
+        } else if (requestCode == CAMERA_PERMISSION_REQUEST) {
             setStatus("Camera permission denied")
-            appendLog("Camera permission: DENIED")
         }
     }
 
@@ -207,533 +200,467 @@ class MainActivity : Activity() {
     private fun scanCameras() {
         closeCamera(null)
         logicalRearId = null
-        selectedPhysicalIds = emptyList()
-        selectedFocals = emptyList()
-        commonOutputSizes = emptyList()
-        maxCommonSize = null
-        maxButton.text = "MAX"
-        logText.text = "Camera2 Probe v$APP_VERSION\n"
+        physicalIds = emptyList()
+        focalById.clear()
+        maxJpegById.clear()
+        fallbackJpegById.clear()
+        logText.text = "Camera2 Probe v0.3.0\n"
         appendLog("=== CAMERA2 CAPABILITY SCAN ===")
 
-        val ids = try {
-            cameraManager.cameraIdList
-        } catch (t: Throwable) {
-            appendLog("cameraIdList ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            setStatus("Camera ID enumeration failed")
+        val ids = try { cameraManager.cameraIdList } catch (t: Throwable) {
+            appendLog("cameraIdList ERROR: ${t.message}")
             return
         }
-
-        appendLog("Public camera IDs: ${ids.joinToString(prefix = "[", postfix = "]")}")
 
         for (id in ids) {
             try {
                 val chars = cameraManager.getCameraCharacteristics(id)
-                val facingValue = chars.get(CameraCharacteristics.LENS_FACING)
-                val facing = facingName(facingValue)
-                val hw = hardwareLevelName(chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL))
+                val facing = chars.get(CameraCharacteristics.LENS_FACING)
                 val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
                 val logical = caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
-                val physicalIds = try {
-                    chars.physicalCameraIds.toList()
-                } catch (t: Throwable) {
-                    appendLog("Camera $id physicalCameraIds ERROR: ${t.javaClass.simpleName}")
-                    emptyList()
-                }
-                val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                    ?.joinToString(prefix = "[", postfix = "]") { "${it}mm" }
-                    ?: "unknown"
+                val pids = chars.physicalCameraIds.toList()
+                appendLog("Camera $id facing=${facingName(facing)} logical=$logical physical=$pids")
 
-                appendLog("")
-                appendLog("Camera $id")
-                appendLog("  facing=$facing")
-                appendLog("  hardware=$hw")
-                appendLog("  focalLengths=$focal")
-                appendLog("  logicalMultiCamera=$logical")
-                appendLog("  physicalIds=${physicalIds.ifEmpty { listOf("<none>") }}")
-
-                for (physicalId in physicalIds) {
-                    appendPhysicalInfo(physicalId)
-                }
-
-                if (
-                    logicalRearId == null &&
-                    facingValue == CameraCharacteristics.LENS_FACING_BACK &&
-                    logical &&
-                    physicalIds.size >= 3
-                ) {
+                if (logicalRearId == null && facing == CameraCharacteristics.LENS_FACING_BACK && logical && pids.size >= 3) {
+                    pids.forEach { pid ->
+                        val pchars = cameraManager.getCameraCharacteristics(pid)
+                        val focal = pchars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.minOrNull()
+                            ?: Float.MAX_VALUE
+                        focalById[pid] = focal
+                    }
+                    physicalIds = pids.sortedBy { focalById[it] ?: Float.MAX_VALUE }.take(3)
                     logicalRearId = id
-                    selectedPhysicalIds = sortPhysicalIdsByFocalLength(physicalIds).take(3)
                 }
             } catch (t: Throwable) {
-                appendLog("")
                 appendLog("Camera $id ERROR: ${t.javaClass.simpleName}: ${t.message}")
-                Log.e(TAG, "Characteristics failed for camera $id", t)
             }
         }
 
-        appendConcurrentInfo()
-        appendLog("")
-        appendLog("=== TRIPLE PHYSICAL TEST CANDIDATE ===")
-
-        if (logicalRearId != null && selectedPhysicalIds.size == 3) {
-            selectedFocals = selectedPhysicalIds.map { getPrimaryFocalLength(it) }
-            appendLog("Logical rear ID: $logicalRearId")
-            appendLog("Selected physical IDs: $selectedPhysicalIds")
-            appendLog("Lens order: ULTRA / MAIN / TELE")
-            calculateCommonOutputSizes()
-            updateCameraLabels()
-
-            val resolved = resolvePresetSize(640, 480)
-            selectedSize = resolved
-            selectedModeName = "VGA"
-            updateResolutionText()
-            setStatus("3 physical cameras found. Choose resolution and START 3-CAM.")
-        } else {
-            updateCameraLabels()
-            appendLog("No public logical rear camera exposing >= 3 physical IDs.")
-            setStatus("Scan complete. 3-camera logical path not found.")
-        }
-    }
-
-    private fun appendPhysicalInfo(id: String) {
-        try {
-            val chars = cameraManager.getCameraCharacteristics(id)
-            val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                ?.joinToString(prefix = "[", postfix = "]") { "${it}mm" }
-                ?: "unknown"
-            val sensor = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
-            val previewSizes = getSurfaceTextureSizes(id)
-            val largest = previewSizes.maxByOrNull { it.width.toLong() * it.height.toLong() }
-            appendLog(
-                "    physical[$id] focal=$focal sensor=${sensor ?: "unknown"}" +
-                    if (largest != null) " previewMax=${formatSize(largest)}" else ""
-            )
-        } catch (t: Throwable) {
-            appendLog("    physical[$id] characteristics unavailable: ${t.javaClass.simpleName}")
-        }
-    }
-
-    private fun sortPhysicalIdsByFocalLength(ids: List<String>): List<String> {
-        return ids.sortedBy { id -> getPrimaryFocalLength(id) ?: Float.MAX_VALUE }
-    }
-
-    private fun getPrimaryFocalLength(id: String): Float? {
-        return try {
-            cameraManager.getCameraCharacteristics(id)
-                .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
-                ?.minOrNull()
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun getSurfaceTextureSizes(id: String): List<Size> {
-        return try {
-            val chars = cameraManager.getCameraCharacteristics(id)
-            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-            map?.getOutputSizes(SurfaceTexture::class.java)?.toList() ?: emptyList()
-        } catch (_: Throwable) {
-            emptyList()
-        }
-    }
-
-    private fun calculateCommonOutputSizes() {
-        var common: Set<Pair<Int, Int>>? = null
-
-        selectedPhysicalIds.forEach { id ->
-            val sizeSet = getSurfaceTextureSizes(id)
-                .map { it.width to it.height }
-                .toSet()
-            common = if (common == null) sizeSet else common!!.intersect(sizeSet)
-        }
-
-        commonOutputSizes = (common ?: emptySet())
-            .map { Size(it.first, it.second) }
-            .sortedWith(
-                compareByDescending<Size> { it.width.toLong() * it.height.toLong() }
-                    .thenByDescending { it.width }
-            )
-
-        maxCommonSize = commonOutputSizes.firstOrNull()
-
-        appendLog("")
-        appendLog("Common SurfaceTexture output sizes: ${commonOutputSizes.size}")
-        if (commonOutputSizes.isNotEmpty()) {
-            appendLog(
-                "  top=${commonOutputSizes.take(12).joinToString { formatSize(it) }}"
-            )
-        }
-
-        val max = maxCommonSize
-        if (max != null) {
-            maxButton.text = "MAX\n${max.width}×${max.height}"
-            appendLog("MAX common output = ${formatSize(max)}")
-            if (max.width.toLong() * max.height.toLong() > 3840L * 2160L) {
-                appendLog("WARNING: MAX is above 4K. HAL may reject it or allocate large buffers.")
-            }
-        } else {
-            appendLog("Could not calculate a common physical-camera SurfaceTexture size.")
-        }
-    }
-
-    private fun appendConcurrentInfo() {
-        appendLog("")
-        appendLog("Concurrent camera sets:")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val sets = cameraManager.concurrentCameraIds
-                if (sets.isEmpty()) {
-                    appendLog("  <none>")
-                } else {
-                    sets.forEach { appendLog("  ${it.joinToString(prefix = "[", postfix = "]")}") }
-                }
-            } catch (t: Throwable) {
-                appendLog("  ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            }
-        } else {
-            appendLog("  unavailable below API 30")
-        }
-    }
-
-    private fun selectPreset(width: Int, height: Int, name: String) {
-        val resolved = resolvePresetSize(width, height)
-        selectedSize = resolved
-        selectedModeName = name
-        updateResolutionText()
-
-        if (resolved.width == width && resolved.height == height) {
-            appendLog("Selected $name: ${formatSize(resolved)}")
-        } else {
-            appendLog("$name exact size not common; using nearest common ${formatSize(resolved)}")
-        }
-
-        if (cameraDevice != null) {
-            setStatus("Resolution changed to ${formatSize(resolved)}. Tap START 3-CAM to restart.")
-        }
-    }
-
-    private fun selectMaximumCommonResolution() {
-        val max = maxCommonSize
-        if (max == null) {
-            appendLog("MAX unavailable. Run SCAN first.")
-            setStatus("Run SCAN before selecting MAX")
+        if (logicalRearId == null || physicalIds.size != 3) {
+            setStatus("3 physical rear cameras not found")
             return
         }
 
-        selectedSize = max
-        selectedModeName = "MAX"
-        updateResolutionText()
-        appendLog("Selected MAX common resolution: ${formatSize(max)}")
-        if (max.width.toLong() * max.height.toLong() > 3840L * 2160L) {
-            appendLog("MAX warning: this is above 4K and may be rejected by the HAL.")
+        appendLog("Logical rear: $logicalRearId")
+        appendLog("Physical order: $physicalIds")
+
+        physicalIds.forEachIndexed { index, pid ->
+            try {
+                val chars = cameraManager.getCameraCharacteristics(pid)
+                val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                val jpegSizes = map?.getOutputSizes(ImageFormat.JPEG)?.toList().orEmpty()
+                val max = jpegSizes.maxByOrNull { it.width.toLong() * it.height.toLong() }
+                val fallback = jpegSizes
+                    .filter { it.width.toLong() * it.height.toLong() <= FALLBACK_MAX_PIXELS }
+                    .maxByOrNull { it.width.toLong() * it.height.toLong() }
+                    ?: max
+
+                if (max != null) maxJpegById[pid] = max
+                if (fallback != null) fallbackJpegById[pid] = fallback
+
+                appendLog(
+                    "${lensNames[index]} ID $pid focal=${formatFocal(pid)}mm " +
+                        "JPEG_MAX=${sizeText(max)} fallback=${sizeText(fallback)}"
+                )
+            } catch (t: Throwable) {
+                appendLog("JPEG size scan failed for physical $pid: ${t.message}")
+            }
         }
-        if (cameraDevice != null) {
-            setStatus("MAX selected. Tap START 3-CAM to restart.")
-        }
+
+        updateLensLabels(null)
+        captureInfoText.text = buildCaptureInfo(maxJpegById)
+        setStatus("Ready: 1080p × 3 preview; MAX JPEG capture available")
     }
 
-    private fun resolvePresetSize(targetWidth: Int, targetHeight: Int): Size {
-        if (commonOutputSizes.isEmpty()) return Size(targetWidth, targetHeight)
-
-        commonOutputSizes.firstOrNull {
-            it.width == targetWidth && it.height == targetHeight
-        }?.let { return it }
-
-        val targetAspect = targetWidth.toDouble() / targetHeight.toDouble()
-        val targetArea = targetWidth.toLong() * targetHeight.toLong()
-        val sameAspect = commonOutputSizes.filter {
-            abs(it.width.toDouble() / it.height.toDouble() - targetAspect) < 0.03
-        }
-        val pool = sameAspect.ifEmpty { commonOutputSizes }
-
-        return pool.minByOrNull {
-            abs(it.width.toLong() * it.height.toLong() - targetArea)
-        } ?: Size(targetWidth, targetHeight)
-    }
-
-    private fun prepareTripleTest() {
+    private fun start1080Preview() {
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            appendLog("Triple test needs CAMERA permission")
             requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
             return
         }
-
-        val logicalId = logicalRearId
-        if (logicalId == null || selectedPhysicalIds.size < 3) {
-            appendLog("TRIPLE TEST: no suitable logical camera. Run SCAN first.")
-            setStatus("Triple test unavailable")
+        if (logicalRearId == null || physicalIds.size != 3) {
+            setStatus("Run SCAN first")
             return
         }
-
         closeCamera(null)
-        resetFpsCounters()
-        appendLog("")
-        appendLog("=== START TRIPLE PREVIEW BENCHMARK ===")
-        appendLog("logical=$logicalId")
-        appendLog("physical=${selectedPhysicalIds.take(3)}")
-        appendLog("mode=$selectedModeName")
-        appendLog("requested=${formatSize(selectedSize)} each")
-        setStatus("Waiting for 3 preview surfaces...")
-
+        pendingPreviewOpen = true
         if (textureViews.all { it.isAvailable }) {
-            openTripleCamera()
+            pendingPreviewOpen = false
+            openPreviewCamera()
         } else {
-            waitingForSurfaces = true
+            setStatus("Waiting for preview surfaces...")
         }
     }
 
-    private fun openTripleCamera() {
+    private fun openPreviewCamera() {
         if (openingCamera || cameraDevice != null) return
         val logicalId = logicalRearId ?: return
-        val physicalIds = selectedPhysicalIds.take(3)
-        if (physicalIds.size != 3) return
         if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
 
-        val surfaces = try {
-            textureViews.map { textureView ->
-                val surfaceTexture = textureView.surfaceTexture
-                    ?: throw IllegalStateException("TextureView has no SurfaceTexture")
-                surfaceTexture.setDefaultBufferSize(selectedSize.width, selectedSize.height)
-                Surface(surfaceTexture)
+        previewSurfaces = try {
+            textureViews.map { view ->
+                val texture = view.surfaceTexture ?: error("Missing SurfaceTexture")
+                texture.setDefaultBufferSize(PREVIEW_WIDTH, PREVIEW_HEIGHT)
+                Surface(texture)
             }
         } catch (t: Throwable) {
-            appendLog("SURFACE ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            setStatus("Surface setup failed")
+            appendLog("Preview surface error: ${t.message}")
             return
         }
 
-        activeSurfaces = surfaces
         openingCamera = true
-        setStatus("Opening logical camera $logicalId @ ${formatSize(selectedSize)}...")
+        setStatus("Opening 3-CAM 1080p preview...")
+        cameraManager.openCamera(logicalId, object : CameraDevice.StateCallback() {
+            override fun onOpened(camera: CameraDevice) {
+                openingCamera = false
+                cameraDevice = camera
+                configurePreviewSession(camera)
+            }
 
-        try {
-            cameraManager.openCamera(
-                logicalId,
-                object : CameraDevice.StateCallback() {
-                    override fun onOpened(camera: CameraDevice) {
-                        openingCamera = false
-                        cameraDevice = camera
-                        appendLog("CameraDevice OPENED: ${camera.id}")
-                        configureTripleSession(camera, physicalIds, surfaces)
-                    }
+            override fun onDisconnected(camera: CameraDevice) {
+                camera.close()
+                if (cameraDevice === camera) cameraDevice = null
+                openingCamera = false
+                setStatus("Camera disconnected")
+            }
 
-                    override fun onDisconnected(camera: CameraDevice) {
-                        appendLog("CameraDevice DISCONNECTED")
-                        camera.close()
-                        if (cameraDevice === camera) cameraDevice = null
-                        openingCamera = false
-                        stopFpsMonitor()
-                        setStatus("Camera disconnected")
-                    }
-
-                    override fun onError(camera: CameraDevice, error: Int) {
-                        appendLog("CameraDevice ERROR: ${cameraErrorName(error)} ($error)")
-                        camera.close()
-                        if (cameraDevice === camera) cameraDevice = null
-                        openingCamera = false
-                        stopFpsMonitor()
-                        setStatus("Camera open failed: ${cameraErrorName(error)}")
-                    }
-                },
-                cameraHandler
-            )
-        } catch (t: Throwable) {
-            openingCamera = false
-            activeSurfaces.forEach { try { it.release() } catch (_: Throwable) {} }
-            activeSurfaces = emptyList()
-            appendLog("OPEN ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            setStatus("Open failed")
-            Log.e(TAG, "openCamera failed", t)
-        }
+            override fun onError(camera: CameraDevice, error: Int) {
+                camera.close()
+                if (cameraDevice === camera) cameraDevice = null
+                openingCamera = false
+                setStatus("Camera error $error")
+            }
+        }, cameraHandler)
     }
 
-    private fun configureTripleSession(
-        camera: CameraDevice,
-        physicalIds: List<String>,
-        surfaces: List<Surface>
-    ) {
+    private fun configurePreviewSession(camera: CameraDevice) {
+        if (previewSurfaces.size != 3 || physicalIds.size != 3) return
         try {
-            val outputs = surfaces.zip(physicalIds).map { (surface, physicalId) ->
-                OutputConfiguration(surface).apply { setPhysicalCameraId(physicalId) }
+            val outputs = previewSurfaces.zip(physicalIds).map { (surface, pid) ->
+                OutputConfiguration(surface).apply { setPhysicalCameraId(pid) }
             }
-
-            outputs.forEachIndexed { index, _ ->
-                appendLog("output[$index] -> physical=${physicalIds[index]}")
-            }
-
             val executor = Executor { command -> cameraHandler?.post(command) }
-            val sessionConfig = SessionConfiguration(
-                SessionConfiguration.SESSION_REGULAR,
-                outputs,
-                executor,
-                object : CameraCaptureSession.StateCallback() {
-                    override fun onConfigured(session: CameraCaptureSession) {
-                        if (cameraDevice == null) {
-                            session.close()
-                            return
+            camera.createCaptureSession(
+                SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR,
+                    outputs,
+                    executor,
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            if (cameraDevice == null) {
+                                session.close()
+                                return
+                            }
+                            captureSession = session
+                            try {
+                                val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                                previewSurfaces.forEach { builder.addTarget(it) }
+                                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                session.setRepeatingRequest(builder.build(), null, cameraHandler)
+                                previewRunning = true
+                                capturing = false
+                                startFpsMeter()
+                                setStatus("SUCCESS: 3-CAM 1920×1080 preview running")
+                                appendLog("TRIPLE PREVIEW: SUCCESS @ 1920x1080 × 3")
+                            } catch (t: Throwable) {
+                                appendLog("Preview request failed: ${t.message}")
+                            }
                         }
-                        captureSession = session
-                        startRepeatingTripleRequest(camera, session, surfaces)
-                    }
 
-                    override fun onConfigureFailed(session: CameraCaptureSession) {
-                        appendLog("TRIPLE SESSION: CONFIGURE FAILED @ ${formatSize(selectedSize)}")
-                        stopFpsMonitor()
-                        setStatus("HAL rejected 3-camera ${formatSize(selectedSize)} session")
-                        session.close()
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            session.close()
+                            setStatus("1080p triple preview rejected by HAL")
+                        }
                     }
-                }
+                )
             )
-
-            appendLog("Submitting 3 physical outputs @ ${formatSize(selectedSize)}...")
-            camera.createCaptureSession(sessionConfig)
         } catch (t: Throwable) {
-            appendLog("SESSION ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            stopFpsMonitor()
-            setStatus("3-camera session creation failed")
-            Log.e(TAG, "Triple session configuration failed", t)
+            appendLog("Preview session error: ${t.javaClass.simpleName}: ${t.message}")
         }
     }
 
-    private fun startRepeatingTripleRequest(
-        camera: CameraDevice,
-        session: CameraCaptureSession,
-        surfaces: List<Surface>
-    ) {
+    private fun startTripleCapture() {
+        val camera = cameraDevice
+        if (camera == null || !previewRunning) {
+            setStatus("Start 1080p preview first")
+            return
+        }
+        if (capturing) return
+        if (maxJpegById.size < 3) {
+            setStatus("JPEG sizes unavailable; run SCAN again")
+            return
+        }
+
+        capturing = true
+        usingFallbackCapture = false
+        previewRunning = false
+        stopFpsMeter()
+        captureReceived.fill(false)
+        captureTimestampsNs.fill(0L)
+        captureByteCounts.fill(0L)
+        captureBatch = SimpleDateFormat("yyyyMMdd_HHmmss_SSS", Locale.US).format(Date())
+
+        appendLog("")
+        appendLog("=== TRIPLE JPEG CAPTURE ===")
+        appendLog("Trying MAX JPEG sizes first")
+        setStatus("Capturing 3 cameras at MAX JPEG resolution...")
+
+        try { captureSession?.stopRepeating() } catch (_: Throwable) {}
+        try { captureSession?.abortCaptures() } catch (_: Throwable) {}
+        try { captureSession?.close() } catch (_: Throwable) {}
+        captureSession = null
+
+        cameraHandler?.postDelayed({ configureCaptureSession(camera, false) }, 100L)
+    }
+
+    private fun configureCaptureSession(camera: CameraDevice, fallback: Boolean) {
+        usingFallbackCapture = fallback
+        closeImageReaders()
+
+        val sizeMap = if (fallback) fallbackJpegById else maxJpegById
+        val sizes = physicalIds.mapNotNull { sizeMap[it] }
+        if (sizes.size != 3) {
+            failCapture("Missing JPEG output sizes")
+            return
+        }
+
+        appendLog("Capture profile: ${if (fallback) "~12MP FALLBACK" else "MAX"}")
+        physicalIds.forEachIndexed { i, pid ->
+            appendLog("  ${lensNames[i]} ID $pid -> ${sizeText(sizes[i])}")
+        }
+        runOnUiThread { captureInfoText.text = buildCaptureInfo(sizeMap) }
+
+        imageReaders = sizes.mapIndexed { index, size ->
+            ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2).apply {
+                setOnImageAvailableListener({ reader -> onJpegAvailable(index, size, reader) }, cameraHandler)
+            }
+        }
+
         try {
-            val requestBuilder = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            surfaces.forEach { requestBuilder.addTarget(it) }
-            requestBuilder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            val outputs = imageReaders.zip(physicalIds).map { (reader, pid) ->
+                OutputConfiguration(reader.surface).apply { setPhysicalCameraId(pid) }
+            }
+            val executor = Executor { command -> cameraHandler?.post(command) }
+            camera.createCaptureSession(
+                SessionConfiguration(
+                    SessionConfiguration.SESSION_REGULAR,
+                    outputs,
+                    executor,
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            if (!capturing || cameraDevice == null) {
+                                session.close()
+                                return
+                            }
+                            captureSession = session
+                            issueStillCapture(camera, session)
+                        }
 
-            session.setRepeatingRequest(
-                requestBuilder.build(),
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            session.close()
+                            captureSession = null
+                            appendLog("JPEG session CONFIGURE FAILED (${if (fallback) "fallback" else "MAX"})")
+                            if (!fallback && capturing) {
+                                appendLog("Retrying automatically with ~12MP per camera...")
+                                cameraHandler?.postDelayed({ configureCaptureSession(camera, true) }, 150L)
+                            } else {
+                                failCapture("Triple JPEG session rejected by HAL")
+                            }
+                        }
+                    }
+                )
+            )
+        } catch (t: Throwable) {
+            appendLog("Capture session exception: ${t.javaClass.simpleName}: ${t.message}")
+            if (!fallback && capturing) {
+                cameraHandler?.postDelayed({ configureCaptureSession(camera, true) }, 150L)
+            } else {
+                failCapture("Capture session creation failed")
+            }
+        }
+    }
+
+    private fun issueStillCapture(camera: CameraDevice, session: CameraCaptureSession) {
+        try {
+            val builder = camera.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+            imageReaders.forEach { builder.addTarget(it.surface) }
+            builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+            builder.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation())
+
+            session.capture(
+                builder.build(),
                 object : CameraCaptureSession.CaptureCallback() {
-                    private var firstFrameLogged = false
-
                     override fun onCaptureStarted(
                         session: CameraCaptureSession,
                         request: CaptureRequest,
                         timestamp: Long,
                         frameNumber: Long
                     ) {
-                        if (!firstFrameLogged) {
-                            firstFrameLogged = true
-                            runOnUiThread {
-                                appendLog("TRIPLE SESSION: SUCCESS @ ${formatSize(selectedSize)}")
-                                appendLog("First capture frame: $frameNumber")
-                                appendLog("Per-camera FPS meter started")
-                                setStatus(
-                                    "SUCCESS: 3-CAM ${formatSize(selectedSize)} running; measuring FPS"
-                                )
-                            }
-                        }
+                        appendLog("Still capture started: frame=$frameNumber requestTs=$timestamp")
+                    }
+
+                    override fun onCaptureFailed(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        failure: android.hardware.camera2.CaptureFailure
+                    ) {
+                        appendLog("Still capture FAILED reason=${failure.reason}")
+                        failCapture("Still capture request failed")
                     }
                 },
                 cameraHandler
             )
-
-            appendLog("Repeating request submitted to all 3 surfaces")
-            runOnUiThread { startFpsMonitor() }
+            mainHandler.removeCallbacks(captureTimeoutRunnable)
+            mainHandler.postDelayed(captureTimeoutRunnable, CAPTURE_TIMEOUT_MS)
         } catch (t: Throwable) {
-            appendLog("REQUEST ERROR: ${t.javaClass.simpleName}: ${t.message}")
-            stopFpsMonitor()
-            setStatus("Repeating request failed")
-            Log.e(TAG, "Repeating request failed", t)
+            appendLog("Still capture exception: ${t.javaClass.simpleName}: ${t.message}")
+            failCapture("Still capture failed")
         }
     }
 
-    private fun resetFpsCounters() {
+    private fun onJpegAvailable(index: Int, size: Size, reader: ImageReader) {
+        val image = try { reader.acquireNextImage() } catch (t: Throwable) {
+            appendLog("${lensNames[index]} acquire image failed: ${t.message}")
+            return
+        } ?: return
+
+        try {
+            val buffer = image.planes[0].buffer
+            val bytes = ByteArray(buffer.remaining())
+            buffer.get(bytes)
+            val timestamp = image.timestamp
+            val path = saveJpeg(bytes, index, size)
+
+            captureReceived[index] = true
+            captureTimestampsNs[index] = timestamp
+            captureByteCounts[index] = bytes.size.toLong()
+            appendLog(
+                "${lensNames[index]} SAVED ${size.width}x${size.height} " +
+                    "${bytes.size / 1024} KiB ts=$timestamp -> $path"
+            )
+        } catch (t: Throwable) {
+            appendLog("${lensNames[index]} save error: ${t.javaClass.simpleName}: ${t.message}")
+        } finally {
+            image.close()
+        }
+
+        if (captureReceived.all { it }) finishTripleCapture()
+    }
+
+    private fun finishTripleCapture() {
+        if (!capturing) return
+        capturing = false
+        mainHandler.removeCallbacks(captureTimeoutRunnable)
+
+        val valid = captureTimestampsNs.filter { it > 0L }
+        val deltaNs = if (valid.size == 3) (valid.maxOrNull()!! - valid.minOrNull()!!) else -1L
+        appendLog("TRIPLE JPEG CAPTURE: SUCCESS (${if (usingFallbackCapture) "fallback" else "MAX"})")
+        if (deltaNs >= 0L) {
+            appendLog("Sensor timestamp spread: ${"%.1f".format(Locale.US, deltaNs / 1000.0)} µs")
+            setStatus("3 photos saved; timestamp spread ${"%.1f".format(Locale.US, deltaNs / 1000.0)} µs")
+        } else {
+            appendLog("Sensor timestamp spread: unavailable")
+            setStatus("3 photos saved successfully")
+        }
+
+        cameraHandler?.postDelayed({ resumePreviewAfterCapture() }, 300L)
+    }
+
+    private fun failCapture(message: String) {
+        if (!capturing) return
+        capturing = false
+        mainHandler.removeCallbacks(captureTimeoutRunnable)
+        appendLog("CAPTURE FAILED: $message")
+        setStatus("$message; restoring preview")
+        cameraHandler?.postDelayed({ resumePreviewAfterCapture() }, 250L)
+    }
+
+    private fun resumePreviewAfterCapture() {
+        try { captureSession?.close() } catch (_: Throwable) {}
+        captureSession = null
+        closeImageReaders()
+        val camera = cameraDevice ?: return
+        if (previewSurfaces.size == 3 && textureViews.all { it.isAvailable }) {
+            configurePreviewSession(camera)
+        }
+    }
+
+    private fun saveJpeg(bytes: ByteArray, index: Int, size: Size): String {
+        val name = "C2P_${captureBatch}_${lensNames[index]}_${size.width}x${size.height}.jpg"
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, name)
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/Camera2Probe")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: error("MediaStore insert failed")
+            contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                ?: error("MediaStore output stream failed")
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+            "Pictures/Camera2Probe/$name"
+        } else {
+            val base = getExternalFilesDir(Environment.DIRECTORY_PICTURES) ?: filesDir
+            val dir = File(base, "Camera2Probe").apply { mkdirs() }
+            val file = File(dir, name)
+            FileOutputStream(file).use { it.write(bytes) }
+            file.absolutePath
+        }
+    }
+
+    private fun jpegOrientation(): Int {
+        val logicalId = logicalRearId ?: return 0
+        val sensor = cameraManager.getCameraCharacteristics(logicalId)
+            .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        val device = when (windowManager.defaultDisplay.rotation) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+        return (sensor - device + 360) % 360
+    }
+
+    private fun startFpsMeter() {
+        fpsRunning = true
         for (i in 0..2) {
-            frameCounts[i] = 0L
-            lastFrameCounts[i] = 0L
-            fpsValues[i] = 0f
+            frameCounters[i] = 0L
+            lastFrameCounters[i] = 0L
         }
-        updateCameraLabels()
-    }
-
-    private fun startFpsMonitor() {
-        resetFpsCounters()
-        fpsMonitoring = true
-        lastFpsSampleMs = SystemClock.elapsedRealtime()
+        lastFpsTimeMs = SystemClock.elapsedRealtime()
         mainHandler.removeCallbacks(fpsRunnable)
         mainHandler.postDelayed(fpsRunnable, 1000L)
     }
 
-    private fun stopFpsMonitor() {
-        fpsMonitoring = false
+    private fun stopFpsMeter() {
+        fpsRunning = false
         mainHandler.removeCallbacks(fpsRunnable)
-        for (i in 0..2) fpsValues[i] = 0f
-        if (::cameraLabels.isInitialized) {
-            runOnUiThread { updateCameraLabels() }
+    }
+
+    private fun updateLensLabels(fps: DoubleArray?) {
+        for (i in 0..2) {
+            val pid = physicalIds.getOrNull(i)
+            val idText = pid ?: "--"
+            val focal = if (pid != null) formatFocal(pid) else "--"
+            val fpsText = if (fps != null) "${"%.1f".format(Locale.US, fps[i])} fps" else "-- fps"
+            lensLabels[i].text = "${lensNames[i]}\nID $idText · ${focal}mm\n$fpsText"
         }
     }
 
-    private fun updateCameraLabels() {
-        if (!::cameraLabels.isInitialized) return
-        val names = listOf("ULTRA", "MAIN", "TELE")
-
-        cameraLabels.forEachIndexed { index, label ->
-            val id = selectedPhysicalIds.getOrNull(index)
-            val focal = selectedFocals.getOrNull(index)
-            val fpsText = if (fpsMonitoring) {
-                String.format(Locale.US, "%.1f fps", fpsValues[index])
-            } else {
-                "-- fps"
-            }
-
-            label.text = if (id != null) {
-                val focalText = focal?.let { String.format(Locale.US, "%.2fmm", it) } ?: "?mm"
-                "${names[index]}\nID $id • $focalText\n$fpsText"
-            } else {
-                "${names[index]}\nID --\n$fpsText"
-            }
-        }
+    private fun buildCaptureInfo(map: Map<String, Size>): String {
+        if (physicalIds.size != 3) return "Capture: max JPEG per physical camera"
+        return physicalIds.mapIndexed { i, id -> "${lensNames[i]} ${sizeText(map[id])}" }
+            .joinToString("  |  ")
     }
 
-    private fun updateResolutionText() {
-        if (!::resolutionText.isInitialized) return
-        resolutionText.text = "Selected: $selectedModeName ${formatSize(selectedSize)} × 3"
+    private fun formatFocal(id: String): String {
+        val focal = focalById[id] ?: return "?"
+        return "%.2f".format(Locale.US, focal)
     }
 
-    private fun closeCamera(reason: String?) {
-        waitingForSurfaces = false
-        stopFpsMonitor()
-
-        try { captureSession?.stopRepeating() } catch (_: Throwable) {}
-        try { captureSession?.close() } catch (_: Throwable) {}
-        captureSession = null
-
-        try { cameraDevice?.close() } catch (_: Throwable) {}
-        cameraDevice = null
-        openingCamera = false
-
-        activeSurfaces.forEach { surface ->
-            try { surface.release() } catch (_: Throwable) {}
-        }
-        activeSurfaces = emptyList()
-
-        if (reason != null) {
-            appendLog(reason)
-            setStatus(reason)
-        }
-    }
-
-    private fun formatSize(size: Size): String = "${size.width}x${size.height}"
-
-    private fun setStatus(text: String) {
-        if (!::statusText.isInitialized) return
-        runOnUiThread { statusText.text = text }
-    }
-
-    private fun appendLog(text: String) {
-        if (::logText.isInitialized) {
-            runOnUiThread {
-                logText.append(text)
-                logText.append("\n")
-            }
-        }
-        Log.d(TAG, text)
-    }
+    private fun sizeText(size: Size?): String = size?.let { "${it.width}x${it.height}" } ?: "?"
 
     private fun facingName(value: Int?): String = when (value) {
         CameraCharacteristics.LENS_FACING_BACK -> "BACK"
@@ -742,22 +669,45 @@ class MainActivity : Activity() {
         else -> "UNKNOWN"
     }
 
-    private fun hardwareLevelName(value: Int?): String = when (value) {
-        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LEGACY -> "LEGACY"
-        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_LIMITED -> "LIMITED"
-        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_FULL -> "FULL"
-        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_3 -> "LEVEL_3"
-        CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL_EXTERNAL -> "EXTERNAL"
-        else -> "UNKNOWN"
+    private fun closeImageReaders() {
+        imageReaders.forEach { try { it.close() } catch (_: Throwable) {} }
+        imageReaders = emptyList()
     }
 
-    private fun cameraErrorName(error: Int): String = when (error) {
-        CameraDevice.StateCallback.ERROR_CAMERA_IN_USE -> "CAMERA_IN_USE"
-        CameraDevice.StateCallback.ERROR_MAX_CAMERAS_IN_USE -> "MAX_CAMERAS_IN_USE"
-        CameraDevice.StateCallback.ERROR_CAMERA_DISABLED -> "CAMERA_DISABLED"
-        CameraDevice.StateCallback.ERROR_CAMERA_DEVICE -> "CAMERA_DEVICE"
-        CameraDevice.StateCallback.ERROR_CAMERA_SERVICE -> "CAMERA_SERVICE"
-        else -> "UNKNOWN"
+    private fun closeCamera(reason: String?) {
+        stopFpsMeter()
+        mainHandler.removeCallbacks(captureTimeoutRunnable)
+        pendingPreviewOpen = false
+        previewRunning = false
+        capturing = false
+
+        try { captureSession?.stopRepeating() } catch (_: Throwable) {}
+        try { captureSession?.close() } catch (_: Throwable) {}
+        captureSession = null
+        closeImageReaders()
+
+        try { cameraDevice?.close() } catch (_: Throwable) {}
+        cameraDevice = null
+        openingCamera = false
+
+        previewSurfaces.forEach { try { it.release() } catch (_: Throwable) {} }
+        previewSurfaces = emptyList()
+
+        if (reason != null) setStatus(reason)
+    }
+
+    private fun appendLog(text: String) {
+        Log.d(TAG, text)
+        runOnUiThread {
+            if (::logText.isInitialized) {
+                logText.append(text)
+                logText.append("\n")
+            }
+        }
+    }
+
+    private fun setStatus(text: String) {
+        runOnUiThread { if (::statusText.isInitialized) statusText.text = text }
     }
 
     override fun onPause() {
@@ -767,7 +717,6 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         closeCamera(null)
-        mainHandler.removeCallbacksAndMessages(null)
         cameraThread?.quitSafely()
         cameraThread = null
         cameraHandler = null
