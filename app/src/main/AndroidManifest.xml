@@ -4,6 +4,7 @@
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
     <application
+        android:name=".TapFocusApplication"
         android:allowBackup="true"
         android:label="TRI // CAM"
         android:supportsRtl="true"
