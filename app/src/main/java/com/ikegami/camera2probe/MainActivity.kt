@@ -1,9 +1,9 @@
 package com.ikegami.camera2probe
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
-import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -20,11 +20,9 @@ import android.view.Surface
 import android.view.TextureView
 import android.widget.Button
 import android.widget.TextView
-import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import java.util.concurrent.Executor
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : Activity() {
 
     companion object {
         private const val TAG = "Camera2Probe"
@@ -51,32 +49,50 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_main)
 
-        cameraManager = getSystemService(CameraManager::class.java)
-        statusText = findViewById(R.id.statusText)
-        logText = findViewById(R.id.logText)
-        previewLabels = findViewById(R.id.previewLabels)
-        textureViews = listOf(
-            findViewById(R.id.preview1),
-            findViewById(R.id.preview2),
-            findViewById(R.id.preview3)
-        )
+        try {
+            setContentView(R.layout.activity_main)
 
-        findViewById<Button>(R.id.scanButton).setOnClickListener { scanCameras() }
-        findViewById<Button>(R.id.tripleButton).setOnClickListener { prepareTripleTest() }
-        findViewById<Button>(R.id.stopButton).setOnClickListener { closeCamera("Stopped by user") }
+            statusText = findViewById(R.id.statusText)
+            logText = findViewById(R.id.logText)
+            previewLabels = findViewById(R.id.previewLabels)
+            textureViews = listOf(
+                findViewById(R.id.preview1),
+                findViewById(R.id.preview2),
+                findViewById(R.id.preview3)
+            )
 
-        startCameraThread()
+            cameraManager = getSystemService(CameraManager::class.java)
+            startCameraThread()
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            findViewById<Button>(R.id.scanButton).setOnClickListener { requestPermissionOrScan() }
+            findViewById<Button>(R.id.tripleButton).setOnClickListener { prepareTripleTest() }
+            findViewById<Button>(R.id.stopButton).setOnClickListener { closeCamera("Stopped by user") }
+
+            statusText.text = "Ready. Tap SCAN to inspect Camera2."
+            logText.text = "Camera2 Probe v0.1.1\n"
+            appendLog("App started successfully")
+            appendLog("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
+            appendLog("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            appendLog("Camera API has NOT been touched yet.")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Fatal startup error", t)
+            try {
+                setContentView(android.R.layout.simple_list_item_1)
+                findViewById<TextView>(android.R.id.text1)?.text =
+                    "Camera2 Probe startup error\n${t.javaClass.simpleName}: ${t.message}"
+            } catch (_: Throwable) {
+                // Last-resort: let Android show the crash if even the fallback UI cannot be created.
+            }
+        }
+    }
+
+    private fun requestPermissionOrScan() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
             scanCameras()
         } else {
-            ActivityCompat.requestPermissions(
-                this,
-                arrayOf(Manifest.permission.CAMERA),
-                CAMERA_PERMISSION_REQUEST
-            )
+            appendLog("Requesting CAMERA permission...")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
         }
     }
 
@@ -86,10 +102,12 @@ class MainActivity : AppCompatActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == CAMERA_PERMISSION_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
+        if (requestCode != CAMERA_PERMISSION_REQUEST) return
+
+        if (grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
             appendLog("Camera permission: GRANTED")
             scanCameras()
-        } else if (requestCode == CAMERA_PERMISSION_REQUEST) {
+        } else {
             setStatus("Camera permission denied")
             appendLog("Camera permission: DENIED")
         }
@@ -105,22 +123,33 @@ class MainActivity : AppCompatActivity() {
         closeCamera(null)
         logicalRearId = null
         selectedPhysicalIds = emptyList()
-        logText.text = ""
+        logText.text = "Camera2 Probe v0.1.1\n"
         appendLog("=== CAMERA2 CAPABILITY SCAN ===")
-        appendLog("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
-        appendLog("Android: ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
 
-        try {
-            val ids = cameraManager.cameraIdList
-            appendLog("Public camera IDs: ${ids.joinToString(prefix = "[", postfix = "]")}")
+        val ids = try {
+            cameraManager.cameraIdList
+        } catch (t: Throwable) {
+            appendLog("cameraIdList ERROR: ${t.javaClass.simpleName}: ${t.message}")
+            setStatus("Camera ID enumeration failed")
+            return
+        }
 
-            for (id in ids) {
+        appendLog("Public camera IDs: ${ids.joinToString(prefix = "[", postfix = "]")}")
+
+        for (id in ids) {
+            try {
                 val chars = cameraManager.getCameraCharacteristics(id)
-                val facing = facingName(chars.get(CameraCharacteristics.LENS_FACING))
+                val facingValue = chars.get(CameraCharacteristics.LENS_FACING)
+                val facing = facingName(facingValue)
                 val hw = hardwareLevelName(chars.get(CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL))
                 val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
                 val logical = caps.contains(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)
-                val physicalIds = chars.physicalCameraIds.toList()
+                val physicalIds = try {
+                    chars.physicalCameraIds.toList()
+                } catch (t: Throwable) {
+                    appendLog("Camera $id physicalCameraIds ERROR: ${t.javaClass.simpleName}")
+                    emptyList()
+                }
                 val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                     ?.joinToString(prefix = "[", postfix = "]") { "${it}mm" }
                     ?: "unknown"
@@ -133,41 +162,39 @@ class MainActivity : AppCompatActivity() {
                 appendLog("  logicalMultiCamera=$logical")
                 appendLog("  physicalIds=${physicalIds.ifEmpty { listOf("<none>") }}")
 
-                if (physicalIds.isNotEmpty()) {
-                    for (physicalId in physicalIds) {
-                        appendPhysicalInfo(physicalId)
-                    }
+                for (physicalId in physicalIds) {
+                    appendPhysicalInfo(physicalId)
                 }
 
                 if (
                     logicalRearId == null &&
-                    facing == "BACK" &&
+                    facingValue == CameraCharacteristics.LENS_FACING_BACK &&
                     logical &&
                     physicalIds.size >= 3
                 ) {
                     logicalRearId = id
                     selectedPhysicalIds = sortPhysicalIdsByFocalLength(physicalIds).take(3)
                 }
+            } catch (t: Throwable) {
+                appendLog("")
+                appendLog("Camera $id ERROR: ${t.javaClass.simpleName}: ${t.message}")
+                Log.e(TAG, "Characteristics failed for camera $id", t)
             }
+        }
 
-            appendConcurrentInfo()
-            appendLog("")
-            appendLog("=== TRIPLE PHYSICAL TEST CANDIDATE ===")
+        appendConcurrentInfo()
+        appendLog("")
+        appendLog("=== TRIPLE PHYSICAL TEST CANDIDATE ===")
 
-            if (logicalRearId != null && selectedPhysicalIds.size == 3) {
-                appendLog("Logical rear ID: $logicalRearId")
-                appendLog("Selected physical IDs: $selectedPhysicalIds")
-                previewLabels.text = selectedPhysicalIds.joinToString("  |  ") { "ID $it" }
-                setStatus("3 physical cameras exposed. Ready for 640x480 × 3 test.")
-            } else {
-                appendLog("No public logical rear camera exposing >= 3 physical IDs.")
-                previewLabels.text = "No 3-physical-camera logical device found"
-                setStatus("3-camera public Camera2 path not found")
-            }
-        } catch (e: Exception) {
-            appendLog("SCAN ERROR: ${e.javaClass.simpleName}: ${e.message}")
-            setStatus("Scan failed")
-            Log.e(TAG, "Camera scan failed", e)
+        if (logicalRearId != null && selectedPhysicalIds.size == 3) {
+            appendLog("Logical rear ID: $logicalRearId")
+            appendLog("Selected physical IDs: $selectedPhysicalIds")
+            previewLabels.text = selectedPhysicalIds.joinToString("  |  ") { "ID $it" }
+            setStatus("3 physical cameras exposed. Ready for 640x480 × 3 test.")
+        } else {
+            appendLog("No public logical rear camera exposing >= 3 physical IDs.")
+            previewLabels.text = "No 3-physical-camera logical device found"
+            setStatus("Scan complete. 3-camera logical path not found.")
         }
     }
 
@@ -179,8 +206,8 @@ class MainActivity : AppCompatActivity() {
                 ?: "unknown"
             val sensor = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
             appendLog("    physical[$id] focal=$focal sensor=${sensor ?: "unknown"}")
-        } catch (e: Exception) {
-            appendLog("    physical[$id] characteristics unavailable: ${e.javaClass.simpleName}")
+        } catch (t: Throwable) {
+            appendLog("    physical[$id] characteristics unavailable: ${t.javaClass.simpleName}")
         }
     }
 
@@ -190,7 +217,7 @@ class MainActivity : AppCompatActivity() {
                 cameraManager.getCameraCharacteristics(id)
                     .get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)
                     ?.minOrNull() ?: Float.MAX_VALUE
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 Float.MAX_VALUE
             }
         }
@@ -207,8 +234,8 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     sets.forEach { appendLog("  ${it.joinToString(prefix = "[", postfix = "]")}") }
                 }
-            } catch (e: Exception) {
-                appendLog("  ERROR: ${e.javaClass.simpleName}: ${e.message}")
+            } catch (t: Throwable) {
+                appendLog("  ERROR: ${t.javaClass.simpleName}: ${t.message}")
             }
         } else {
             appendLog("  unavailable below API 30")
@@ -216,8 +243,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun prepareTripleTest() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+            appendLog("Triple test needs CAMERA permission")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
             return
         }
 
@@ -268,9 +296,7 @@ class MainActivity : AppCompatActivity() {
         val physicalIds = selectedPhysicalIds.take(3)
         if (physicalIds.size != 3) return
 
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            return
-        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
 
         val surfaces = try {
             textureViews.map { textureView ->
@@ -279,8 +305,8 @@ class MainActivity : AppCompatActivity() {
                 surfaceTexture.setDefaultBufferSize(TEST_WIDTH, TEST_HEIGHT)
                 Surface(surfaceTexture)
             }
-        } catch (e: Exception) {
-            appendLog("SURFACE ERROR: ${e.message}")
+        } catch (t: Throwable) {
+            appendLog("SURFACE ERROR: ${t.javaClass.simpleName}: ${t.message}")
             setStatus("Surface setup failed")
             return
         }
@@ -318,13 +344,13 @@ class MainActivity : AppCompatActivity() {
                 },
                 cameraHandler
             )
-        } catch (e: Exception) {
+        } catch (t: Throwable) {
             openingCamera = false
             activeSurfaces.forEach { it.release() }
             activeSurfaces = emptyList()
-            appendLog("OPEN ERROR: ${e.javaClass.simpleName}: ${e.message}")
+            appendLog("OPEN ERROR: ${t.javaClass.simpleName}: ${t.message}")
             setStatus("Open failed")
-            Log.e(TAG, "openCamera failed", e)
+            Log.e(TAG, "openCamera failed", t)
         }
     }
 
@@ -335,12 +361,10 @@ class MainActivity : AppCompatActivity() {
     ) {
         try {
             val outputs = surfaces.zip(physicalIds).map { (surface, physicalId) ->
-                OutputConfiguration(surface).apply {
-                    setPhysicalCameraId(physicalId)
-                }
+                OutputConfiguration(surface).apply { setPhysicalCameraId(physicalId) }
             }
 
-            outputs.forEachIndexed { index, output ->
+            outputs.forEachIndexed { index, _ ->
                 appendLog("output[$index] -> physical=${physicalIds[index]}")
             }
 
@@ -369,10 +393,10 @@ class MainActivity : AppCompatActivity() {
 
             appendLog("Submitting SessionConfiguration with 3 physical outputs...")
             camera.createCaptureSession(sessionConfig)
-        } catch (e: Exception) {
-            appendLog("SESSION ERROR: ${e.javaClass.simpleName}: ${e.message}")
+        } catch (t: Throwable) {
+            appendLog("SESSION ERROR: ${t.javaClass.simpleName}: ${t.message}")
             setStatus("3-camera session creation failed")
-            Log.e(TAG, "Triple session configuration failed", e)
+            Log.e(TAG, "Triple session configuration failed", t)
         }
     }
 
@@ -409,30 +433,24 @@ class MainActivity : AppCompatActivity() {
                 cameraHandler
             )
             appendLog("Repeating request submitted to all 3 surfaces")
-        } catch (e: Exception) {
-            appendLog("REQUEST ERROR: ${e.javaClass.simpleName}: ${e.message}")
+        } catch (t: Throwable) {
+            appendLog("REQUEST ERROR: ${t.javaClass.simpleName}: ${t.message}")
             setStatus("Repeating request failed")
-            Log.e(TAG, "Repeating request failed", e)
+            Log.e(TAG, "Repeating request failed", t)
         }
     }
 
     private fun closeCamera(reason: String?) {
-        try {
-            captureSession?.stopRepeating()
-        } catch (_: Exception) {
-        }
-        captureSession?.close()
+        try { captureSession?.stopRepeating() } catch (_: Throwable) {}
+        try { captureSession?.close() } catch (_: Throwable) {}
         captureSession = null
 
-        cameraDevice?.close()
+        try { cameraDevice?.close() } catch (_: Throwable) {}
         cameraDevice = null
         openingCamera = false
 
         activeSurfaces.forEach { surface ->
-            try {
-                surface.release()
-            } catch (_: Exception) {
-            }
+            try { surface.release() } catch (_: Throwable) {}
         }
         activeSurfaces = emptyList()
 
