@@ -1,0 +1,72 @@
+name: Publish Latest APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Install stable prototype debug key
+        run: |
+          mkdir -p "$HOME/.android"
+          base64 -d ci/debug.keystore.b64 > "$HOME/.android/debug.keystore"
+          chmod 600 "$HOME/.android/debug.keystore"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build signed debug APK
+        run: gradle --no-daemon assembleDebug
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          cp app/build/outputs/apk/debug/app-debug.apk "TRI-CAM-v${VERSION_NAME}.apk"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        shell: bash
+        run: |
+          TAG="v${VERSION_NAME}"
+          APK="TRI-CAM-v${VERSION_NAME}.apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do
+              [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
+            done
+            gh release edit "$TAG" --title "TRI // CAM v${VERSION_NAME}" --notes "Personal sideload build for TRI // CAM."
+          else
+            gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "TRI // CAM v${VERSION_NAME}" --notes "Personal sideload build for TRI // CAM." --latest
+            exit 0
+          fi
+          gh release upload "$TAG" "$APK" --clobber
