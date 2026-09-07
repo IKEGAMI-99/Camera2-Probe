@@ -1,0 +1,159 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/app_bg"
+    android:fitsSystemWindows="true"
+    android:orientation="vertical"
+    android:paddingStart="12dp"
+    android:paddingTop="6dp"
+    android:paddingEnd="12dp"
+    android:paddingBottom="7dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="46dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+        <TextView
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:fontFamily="sans-serif-medium" android:letterSpacing="0.18"
+            android:text="TRI // CAM" android:textColor="#F1F5FF"
+            android:textSize="18sp" android:textStyle="bold" />
+        <View android:layout_width="18dp" android:layout_height="1dp" />
+        <View android:layout_width="5dp" android:layout_height="5dp" android:background="@drawable/live_dot" />
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_marginStart="7dp" android:layout_weight="1"
+            android:ellipsize="end" android:maxLines="1"
+            android:text="INITIALIZING TRIPLE OPTICS" android:textColor="#8595AA" android:textSize="9sp" />
+        <TextView
+            android:id="@+id/linkBadge"
+            android:layout_width="wrap_content" android:layout_height="wrap_content"
+            android:background="@drawable/link_badge_bg" android:fontFamily="sans-serif-medium"
+            android:paddingStart="11dp" android:paddingTop="5dp" android:paddingEnd="11dp" android:paddingBottom="5dp"
+            android:text="3× LINK" android:textColor="#65F4C7" android:textSize="9sp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/cameraMatrix"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="5dp"
+        android:layout_weight="1"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:id="@+id/mainFrame"
+            android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_marginEnd="4dp" android:layout_weight="1"
+            android:background="@drawable/neon_frame_main" android:padding="3dp">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/preview_clip_bg" android:clipToOutline="true" android:outlineProvider="background">
+                <TextureView android:id="@+id/previewMain" android:layout_width="match_parent" android:layout_height="match_parent" />
+            </FrameLayout>
+            <TextView
+                android:id="@+id/labelMain"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start" android:layout_margin="8dp"
+                android:background="@drawable/lens_badge_main" android:drawablePadding="5dp"
+                android:drawableStart="@drawable/ic_optic" android:drawableTint="#A58BFF"
+                android:paddingStart="8dp" android:paddingTop="5dp" android:paddingEnd="9dp" android:paddingBottom="5dp"
+                android:text="MAIN\n-- fps" android:textColor="#F0ECFF" android:textSize="8sp" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/ultraFrame"
+            android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:layout_weight="1"
+            android:background="@drawable/neon_frame_ultra" android:padding="3dp">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/preview_clip_bg" android:clipToOutline="true" android:outlineProvider="background">
+                <TextureView android:id="@+id/previewUltra" android:layout_width="match_parent" android:layout_height="match_parent" />
+            </FrameLayout>
+            <TextView
+                android:id="@+id/labelUltra"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start" android:layout_margin="8dp"
+                android:background="@drawable/lens_badge_ultra" android:drawablePadding="5dp"
+                android:drawableStart="@drawable/ic_optic" android:drawableTint="#4DEBFF"
+                android:paddingStart="8dp" android:paddingTop="5dp" android:paddingEnd="9dp" android:paddingBottom="5dp"
+                android:text="ULTRA\n-- fps" android:textColor="#E9FCFF" android:textSize="8sp" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/teleFrame"
+            android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_marginStart="4dp" android:layout_marginEnd="4dp" android:layout_weight="1"
+            android:background="@drawable/neon_frame_tele" android:padding="3dp">
+            <FrameLayout android:layout_width="match_parent" android:layout_height="match_parent" android:background="@drawable/preview_clip_bg" android:clipToOutline="true" android:outlineProvider="background">
+                <TextureView android:id="@+id/previewTele" android:layout_width="match_parent" android:layout_height="match_parent" />
+            </FrameLayout>
+            <TextView
+                android:id="@+id/labelTele"
+                android:layout_width="wrap_content" android:layout_height="wrap_content"
+                android:layout_gravity="bottom|start" android:layout_margin="8dp"
+                android:background="@drawable/lens_badge_tele" android:drawablePadding="5dp"
+                android:drawableStart="@drawable/ic_optic" android:drawableTint="#58F6B3"
+                android:paddingStart="8dp" android:paddingTop="5dp" android:paddingEnd="9dp" android:paddingBottom="5dp"
+                android:text="TELE\n-- fps" android:textColor="#ECFFF6" android:textSize="8sp" />
+        </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/controlPanel"
+            android:layout_width="0dp" android:layout_height="match_parent"
+            android:layout_marginStart="4dp" android:layout_weight="1"
+            android:background="@drawable/control_panel_bg" android:padding="10dp">
+            <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:gravity="center" android:orientation="vertical">
+                <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:letterSpacing="0.15" android:text="SYNC CAPTURE" android:textColor="#C6D3E2" android:textSize="8sp" />
+                <LinearLayout
+                    android:id="@+id/allAfButton"
+                    android:layout_width="86dp" android:layout_height="38dp" android:layout_marginTop="8dp"
+                    android:background="@drawable/all_af_button_bg" android:gravity="center" android:orientation="horizontal">
+                    <ImageView android:layout_width="15dp" android:layout_height="15dp" android:src="@drawable/ic_focus_all" android:tint="#63F5D1" />
+                    <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="6dp" android:text="ALL AF" android:textColor="#D6FFF5" android:textSize="8sp" />
+                </LinearLayout>
+                <ImageButton
+                    android:id="@+id/captureButton"
+                    android:layout_width="104dp" android:layout_height="104dp" android:layout_marginTop="8dp"
+                    android:background="@drawable/shutter_button_bg" android:contentDescription="Capture all three cameras"
+                    android:padding="29dp" android:src="@drawable/ic_shutter" android:tint="#F7FBFF" />
+                <TextView
+                    android:id="@+id/captureInfoText"
+                    android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="7dp"
+                    android:ellipsize="end" android:gravity="center" android:maxLines="2"
+                    android:text="MAX JPEG × 3" android:textColor="#60748A" android:textSize="6.5sp" />
+            </LinearLayout>
+        </FrameLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottomActionBar"
+        android:layout_width="match_parent"
+        android:layout_height="54dp"
+        android:layout_marginTop="7dp"
+        android:gravity="center"
+        android:orientation="horizontal">
+        <LinearLayout
+            android:id="@+id/settingsButton"
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginEnd="5dp" android:layout_weight="1"
+            android:background="@drawable/mini_action_button_bg" android:gravity="center" android:orientation="horizontal">
+            <ImageView android:layout_width="21dp" android:layout_height="21dp" android:src="@drawable/ic_settings" android:tint="#B6A5FF" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="10dp" android:text="SETTINGS · UPDATE" android:textColor="#E9E2FF" android:textSize="9sp" />
+        </LinearLayout>
+        <LinearLayout
+            android:id="@+id/galleryButton"
+            android:layout_width="0dp" android:layout_height="match_parent" android:layout_marginStart="5dp" android:layout_weight="1"
+            android:background="@drawable/mini_action_button_bg" android:gravity="center" android:orientation="horizontal">
+            <ImageView android:layout_width="21dp" android:layout_height="21dp" android:src="@drawable/ic_gallery" android:tint="#5CF1BF" />
+            <TextView android:layout_width="wrap_content" android:layout_height="wrap_content" android:layout_marginStart="10dp" android:text="DEVICE GALLERY" android:textColor="#E2FFF4" android:textSize="9sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/diagnosticPanel"
+        android:layout_width="match_parent" android:layout_height="120dp" android:layout_marginTop="6dp"
+        android:background="@drawable/diagnostic_bg" android:fillViewport="true" android:visibility="gone">
+        <TextView android:id="@+id/logText" android:layout_width="match_parent" android:layout_height="wrap_content" android:fontFamily="monospace" android:padding="9dp" android:textColor="#72FFCB" android:textSize="8sp" />
+    </ScrollView>
+</LinearLayout>
