@@ -5,9 +5,17 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera.any" android:required="true" />
 
+    <queries>
+        <package android:name="com.miui.gallery" />
+        <package android:name="com.android.gallery3d" />
+        <package android:name="com.sec.android.gallery3d" />
+        <package android:name="com.coloros.gallery3d" />
+    </queries>
+
     <application
-        android:name=".TapFocusApplication"
         android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="TRI // CAM"
         android:supportsRtl="true"
         android:theme="@style/Theme.TripleCam">
