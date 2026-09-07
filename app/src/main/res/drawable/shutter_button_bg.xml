@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_pressed="true">
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <gradient android:angle="315" android:startColor="#D05736FF" android:centerColor="#D02DCBFF" android:endColor="#D036FFC0" />
+                    <stroke android:width="3dp" android:color="#F5FFFFFF" />
+                </shape>
+            </item>
+            <item android:left="8dp" android:top="8dp" android:right="8dp" android:bottom="8dp">
+                <shape android:shape="oval">
+                    <solid android:color="#86101827" />
+                    <stroke android:width="2dp" android:color="#D56FFFFF" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+    <item>
+        <layer-list>
+            <item>
+                <shape android:shape="oval">
+                    <gradient android:angle="315" android:startColor="#A56D35FF" android:centerColor="#A52EA7FF" android:endColor="#A529FFD0" />
+                    <stroke android:width="2dp" android:color="#D8D9F8FF" />
+                </shape>
+            </item>
+            <item android:left="7dp" android:top="7dp" android:right="7dp" android:bottom="7dp">
+                <shape android:shape="oval">
+                    <solid android:color="#B00A101A" />
+                    <stroke android:width="2dp" android:color="#BF72FFE2" />
+                </shape>
+            </item>
+        </layer-list>
+    </item>
+</selector>
