@@ -7,7 +7,7 @@
         android:allowBackup="true"
         android:label="Camera2 Probe"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Camera2Probe">
+        android:theme="@android:style/Theme.Material.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
