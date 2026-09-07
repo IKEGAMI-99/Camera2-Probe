@@ -2,7 +2,9 @@ package com.ikegami.camera2probe
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ContentValues
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
@@ -26,7 +28,7 @@ import android.util.Log
 import android.util.Size
 import android.view.Surface
 import android.view.TextureView
-import android.widget.Button
+import android.view.View
 import android.widget.TextView
 import java.io.File
 import java.io.FileOutputStream
@@ -38,18 +40,24 @@ import java.util.concurrent.Executor
 class MainActivity : Activity() {
 
     companion object {
-        private const val TAG = "Camera2Probe"
+        private const val TAG = "TripleCam"
         private const val CAMERA_PERMISSION_REQUEST = 10
         private const val PREVIEW_WIDTH = 1920
         private const val PREVIEW_HEIGHT = 1080
         private const val FALLBACK_MAX_PIXELS = 12_500_000L
         private const val CAPTURE_TIMEOUT_MS = 15_000L
+        private const val PREFS_NAME = "triple_cam_ui"
+        private const val PREF_FPS = "show_fps"
+        private const val PREF_DIAGNOSTICS = "show_diagnostics"
     }
 
     private lateinit var cameraManager: CameraManager
     private lateinit var statusText: TextView
+    private lateinit var linkBadge: TextView
     private lateinit var logText: TextView
+    private lateinit var diagnosticPanel: View
     private lateinit var captureInfoText: TextView
+    private lateinit var captureButton: View
     private lateinit var textureViews: List<TextureView>
     private lateinit var lensLabels: List<TextView>
 
@@ -72,6 +80,10 @@ class MainActivity : Activity() {
     private var previewRunning = false
     private var capturing = false
     private var usingFallbackCapture = false
+    private var firstResume = true
+
+    private var fpsOverlayEnabled = true
+    private var diagnosticsVisible = false
 
     private val frameCounters = LongArray(3)
     private val lastFrameCounters = LongArray(3)
@@ -83,6 +95,8 @@ class MainActivity : Activity() {
     private val captureByteCounts = LongArray(3)
     private var captureBatch = ""
 
+    // Physical-camera order remains ULTRA -> MAIN -> TELE even though screen position is
+    // MAIN(top-left), ULTRA(top-right), TELE(bottom-left).
     private val lensNames = listOf("ULTRA", "MAIN", "TELE")
 
     private val fpsRunnable = object : Runnable {
@@ -105,7 +119,8 @@ class MainActivity : Activity() {
     private val captureTimeoutRunnable = Runnable {
         if (!capturing) return@Runnable
         appendLog("CAPTURE TIMEOUT: received ${captureReceived.count { it }}/3 JPEGs")
-        setStatus("Capture timeout; restoring 1080p preview")
+        setStatus("CAPTURE TIMEOUT · RESTORING PREVIEW")
+        setLinkBadge("RECOVER")
         capturing = false
         cameraHandler?.post { resumePreviewAfterCapture() }
     }
@@ -114,38 +129,68 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         try {
             setContentView(R.layout.activity_main)
+
             statusText = findViewById(R.id.statusText)
+            linkBadge = findViewById(R.id.linkBadge)
             logText = findViewById(R.id.logText)
+            diagnosticPanel = findViewById(R.id.diagnosticPanel)
             captureInfoText = findViewById(R.id.captureInfoText)
-            textureViews = listOf(
-                findViewById(R.id.preview1),
-                findViewById(R.id.preview2),
-                findViewById(R.id.preview3)
-            )
-            lensLabels = listOf(
-                findViewById(R.id.label1),
-                findViewById(R.id.label2),
-                findViewById(R.id.label3)
-            )
+            captureButton = findViewById(R.id.captureButton)
+
+            val previewUltra: TextureView = findViewById(R.id.previewUltra)
+            val previewMain: TextureView = findViewById(R.id.previewMain)
+            val previewTele: TextureView = findViewById(R.id.previewTele)
+            textureViews = listOf(previewUltra, previewMain, previewTele)
+
+            val labelUltra: TextView = findViewById(R.id.labelUltra)
+            val labelMain: TextView = findViewById(R.id.labelMain)
+            val labelTele: TextView = findViewById(R.id.labelTele)
+            lensLabels = listOf(labelUltra, labelMain, labelTele)
+
+            val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            fpsOverlayEnabled = prefs.getBoolean(PREF_FPS, true)
+            diagnosticsVisible = prefs.getBoolean(PREF_DIAGNOSTICS, false)
+            applyDiagnosticsVisibility()
 
             cameraManager = getSystemService(CameraManager::class.java)
             startCameraThread()
             installTextureListeners()
+            installUiActions()
 
-            findViewById<Button>(R.id.scanButton).setOnClickListener { requestPermissionOrScan() }
-            findViewById<Button>(R.id.startButton).setOnClickListener { start1080Preview() }
-            findViewById<Button>(R.id.captureButton).setOnClickListener { startTripleCapture() }
-            findViewById<Button>(R.id.stopButton).setOnClickListener { closeCamera("Stopped by user") }
-
-            statusText.text = "Ready. SCAN first, then START 1080P."
-            logText.text = "Camera2 Probe v0.3.0\n"
+            statusText.text = "INITIALIZING TRIPLE OPTICS"
+            linkBadge.text = "BOOT"
+            logText.text = "TRI // CAM v0.4.0\n"
+            appendLog("UI: MAIN top-left / ULTRA top-right / TELE bottom-left")
             appendLog("Preview fixed at 1920x1080 × 3")
-            appendLog("Capture mode: MAX JPEG per physical camera with ~12MP fallback")
+            appendLog("Capture: MAX JPEG × 3 with ~12MP fallback")
+
+            requestPermissionAndBoot()
         } catch (t: Throwable) {
             Log.e(TAG, "Fatal startup error", t)
             setContentView(android.R.layout.simple_list_item_1)
             findViewById<TextView>(android.R.id.text1)?.text =
-                "Camera2 Probe startup error\n${t.javaClass.simpleName}: ${t.message}"
+                "TRI // CAM startup error\n${t.javaClass.simpleName}: ${t.message}"
+        }
+    }
+
+    private fun installUiActions() {
+        captureButton.setOnClickListener {
+            it.animate().scaleX(0.91f).scaleY(0.91f).setDuration(80L).withEndAction {
+                it.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
+            }.start()
+            startTripleCapture()
+        }
+        findViewById<View>(R.id.settingsButton).setOnClickListener { showSettings() }
+        findViewById<View>(R.id.galleryButton).setOnClickListener { openGallery() }
+    }
+
+    private fun requestPermissionAndBoot() {
+        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            scanCameras(autoStart = true)
+        } else {
+            setStatus("CAMERA PERMISSION REQUIRED")
+            setLinkBadge("LOCKED")
+            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
         }
     }
 
@@ -160,21 +205,12 @@ class MainActivity : Activity() {
                 }
 
                 override fun onSurfaceTextureSizeChanged(surface: SurfaceTexture, width: Int, height: Int) = Unit
-
                 override fun onSurfaceTextureDestroyed(surface: SurfaceTexture): Boolean = true
 
                 override fun onSurfaceTextureUpdated(surface: SurfaceTexture) {
                     if (fpsRunning && index in 0..2) frameCounters[index]++
                 }
             }
-        }
-    }
-
-    private fun requestPermissionOrScan() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            scanCameras()
-        } else {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
         }
     }
 
@@ -185,30 +221,35 @@ class MainActivity : Activity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == CAMERA_PERMISSION_REQUEST && grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED) {
-            scanCameras()
+            scanCameras(autoStart = true)
         } else if (requestCode == CAMERA_PERMISSION_REQUEST) {
-            setStatus("Camera permission denied")
+            setStatus("CAMERA PERMISSION DENIED")
+            setLinkBadge("OFFLINE")
         }
     }
 
     private fun startCameraThread() {
         if (cameraThread != null) return
-        cameraThread = HandlerThread("Camera2ProbeThread").also { it.start() }
+        cameraThread = HandlerThread("TripleCamThread").also { it.start() }
         cameraHandler = Handler(cameraThread!!.looper)
     }
 
-    private fun scanCameras() {
+    private fun scanCameras(autoStart: Boolean = false) {
         closeCamera(null)
         logicalRearId = null
         physicalIds = emptyList()
         focalById.clear()
         maxJpegById.clear()
         fallbackJpegById.clear()
-        logText.text = "Camera2 Probe v0.3.0\n"
+        logText.text = "TRI // CAM v0.4.0\n"
         appendLog("=== CAMERA2 CAPABILITY SCAN ===")
+        setStatus("SCANNING PHYSICAL CAMERAS")
+        setLinkBadge("SCAN")
 
         val ids = try { cameraManager.cameraIdList } catch (t: Throwable) {
             appendLog("cameraIdList ERROR: ${t.message}")
+            setStatus("CAMERA ENUMERATION FAILED")
+            setLinkBadge("ERROR")
             return
         }
 
@@ -237,7 +278,8 @@ class MainActivity : Activity() {
         }
 
         if (logicalRearId == null || physicalIds.size != 3) {
-            setStatus("3 physical rear cameras not found")
+            setStatus("TRIPLE CAMERA PATH NOT FOUND")
+            setLinkBadge("2×/ERR")
             return
         }
 
@@ -268,17 +310,19 @@ class MainActivity : Activity() {
         }
 
         updateLensLabels(null)
-        captureInfoText.text = buildCaptureInfo(maxJpegById)
-        setStatus("Ready: 1080p × 3 preview; MAX JPEG capture available")
+        captureInfoText.text = compactCaptureInfo(maxJpegById)
+        setStatus("3 OPTICS READY · STARTING 1080P")
+        setLinkBadge("3× READY")
+
+        if (autoStart) {
+            mainHandler.postDelayed({ start1080Preview() }, 180L)
+        }
     }
 
     private fun start1080Preview() {
-        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(Manifest.permission.CAMERA), CAMERA_PERMISSION_REQUEST)
-            return
-        }
+        if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
         if (logicalRearId == null || physicalIds.size != 3) {
-            setStatus("Run SCAN first")
+            scanCameras(autoStart = true)
             return
         }
         closeCamera(null)
@@ -287,7 +331,7 @@ class MainActivity : Activity() {
             pendingPreviewOpen = false
             openPreviewCamera()
         } else {
-            setStatus("Waiting for preview surfaces...")
+            setStatus("WAITING FOR PREVIEW SURFACES")
         }
     }
 
@@ -304,11 +348,13 @@ class MainActivity : Activity() {
             }
         } catch (t: Throwable) {
             appendLog("Preview surface error: ${t.message}")
+            setStatus("PREVIEW SURFACE ERROR")
             return
         }
 
         openingCamera = true
-        setStatus("Opening 3-CAM 1080p preview...")
+        setStatus("LINKING 3 OPTICS @ 1080P")
+        setLinkBadge("LINKING")
         cameraManager.openCamera(logicalId, object : CameraDevice.StateCallback() {
             override fun onOpened(camera: CameraDevice) {
                 openingCamera = false
@@ -320,14 +366,16 @@ class MainActivity : Activity() {
                 camera.close()
                 if (cameraDevice === camera) cameraDevice = null
                 openingCamera = false
-                setStatus("Camera disconnected")
+                setStatus("CAMERA DISCONNECTED")
+                setLinkBadge("OFFLINE")
             }
 
             override fun onError(camera: CameraDevice, error: Int) {
                 camera.close()
                 if (cameraDevice === camera) cameraDevice = null
                 openingCamera = false
-                setStatus("Camera error $error")
+                setStatus("CAMERA ERROR $error")
+                setLinkBadge("ERROR")
             }
         }, cameraHandler)
     }
@@ -359,34 +407,38 @@ class MainActivity : Activity() {
                                 previewRunning = true
                                 capturing = false
                                 startFpsMeter()
-                                setStatus("SUCCESS: 3-CAM 1920×1080 preview running")
+                                setStatus("LIVE · 1920×1080 × 3")
+                                setLinkBadge("3× LIVE")
                                 appendLog("TRIPLE PREVIEW: SUCCESS @ 1920x1080 × 3")
                             } catch (t: Throwable) {
                                 appendLog("Preview request failed: ${t.message}")
+                                setLinkBadge("ERROR")
                             }
                         }
 
                         override fun onConfigureFailed(session: CameraCaptureSession) {
                             session.close()
-                            setStatus("1080p triple preview rejected by HAL")
+                            setStatus("1080P TRIPLE PREVIEW REJECTED")
+                            setLinkBadge("ERROR")
                         }
                     }
                 )
             )
         } catch (t: Throwable) {
             appendLog("Preview session error: ${t.javaClass.simpleName}: ${t.message}")
+            setLinkBadge("ERROR")
         }
     }
 
     private fun startTripleCapture() {
         val camera = cameraDevice
         if (camera == null || !previewRunning) {
-            setStatus("Start 1080p preview first")
+            setStatus("PREVIEW NOT READY")
             return
         }
         if (capturing) return
         if (maxJpegById.size < 3) {
-            setStatus("JPEG sizes unavailable; run SCAN again")
+            setStatus("JPEG PROFILE UNAVAILABLE")
             return
         }
 
@@ -402,7 +454,8 @@ class MainActivity : Activity() {
         appendLog("")
         appendLog("=== TRIPLE JPEG CAPTURE ===")
         appendLog("Trying MAX JPEG sizes first")
-        setStatus("Capturing 3 cameras at MAX JPEG resolution...")
+        setStatus("CAPTURING MAX JPEG × 3")
+        setLinkBadge("CAPTURE")
 
         try { captureSession?.stopRepeating() } catch (_: Throwable) {}
         try { captureSession?.abortCaptures() } catch (_: Throwable) {}
@@ -427,7 +480,7 @@ class MainActivity : Activity() {
         physicalIds.forEachIndexed { i, pid ->
             appendLog("  ${lensNames[i]} ID $pid -> ${sizeText(sizes[i])}")
         }
-        runOnUiThread { captureInfoText.text = buildCaptureInfo(sizeMap) }
+        runOnUiThread { captureInfoText.text = compactCaptureInfo(sizeMap) }
 
         imageReaders = sizes.mapIndexed { index, size ->
             ImageReader.newInstance(size.width, size.height, ImageFormat.JPEG, 2).apply {
@@ -555,12 +608,14 @@ class MainActivity : Activity() {
         val deltaNs = if (valid.size == 3) (valid.maxOrNull()!! - valid.minOrNull()!!) else -1L
         appendLog("TRIPLE JPEG CAPTURE: SUCCESS (${if (usingFallbackCapture) "fallback" else "MAX"})")
         if (deltaNs >= 0L) {
-            appendLog("Sensor timestamp spread: ${"%.1f".format(Locale.US, deltaNs / 1000.0)} µs")
-            setStatus("3 photos saved; timestamp spread ${"%.1f".format(Locale.US, deltaNs / 1000.0)} µs")
+            val deltaUs = "%.1f".format(Locale.US, deltaNs / 1000.0)
+            appendLog("Sensor timestamp spread: $deltaUs µs")
+            setStatus("3 PHOTOS SAVED · Δ $deltaUs µs")
         } else {
             appendLog("Sensor timestamp spread: unavailable")
-            setStatus("3 photos saved successfully")
+            setStatus("3 PHOTOS SAVED")
         }
+        setLinkBadge("SAVED")
 
         cameraHandler?.postDelayed({ resumePreviewAfterCapture() }, 300L)
     }
@@ -570,7 +625,8 @@ class MainActivity : Activity() {
         capturing = false
         mainHandler.removeCallbacks(captureTimeoutRunnable)
         appendLog("CAPTURE FAILED: $message")
-        setStatus("$message; restoring preview")
+        setStatus("CAPTURE FAILED · RESTORING")
+        setLinkBadge("ERROR")
         cameraHandler?.postDelayed({ resumePreviewAfterCapture() }, 250L)
     }
 
@@ -585,7 +641,7 @@ class MainActivity : Activity() {
     }
 
     private fun saveJpeg(bytes: ByteArray, index: Int, size: Size): String {
-        val name = "C2P_${captureBatch}_${lensNames[index]}_${size.width}x${size.height}.jpg"
+        val name = "TRICAM_${captureBatch}_${lensNames[index]}_${size.width}x${size.height}.jpg"
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, name)
@@ -610,10 +666,59 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun openGallery() {
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(intent)
+        } catch (t: Throwable) {
+            try {
+                startActivity(Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI))
+            } catch (_: Throwable) {
+                setStatus("NO GALLERY APP AVAILABLE")
+            }
+        }
+    }
+
+    private fun showSettings() {
+        val items = arrayOf("プレビューにFPSを表示", "診断ログを表示")
+        val checked = booleanArrayOf(fpsOverlayEnabled, diagnosticsVisible)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("TRI // CAM SETTINGS")
+            .setMultiChoiceItems(items, checked) { _, which, enabled ->
+                when (which) {
+                    0 -> {
+                        fpsOverlayEnabled = enabled
+                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_FPS, enabled).apply()
+                        updateLensLabels(null)
+                    }
+                    1 -> {
+                        diagnosticsVisible = enabled
+                        getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putBoolean(PREF_DIAGNOSTICS, enabled).apply()
+                        applyDiagnosticsVisibility()
+                    }
+                }
+            }
+            .setNeutralButton("再スキャン") { _, _ -> scanCameras(autoStart = true) }
+            .setPositiveButton("閉じる", null)
+            .create()
+        dialog.show()
+    }
+
+    private fun applyDiagnosticsVisibility() {
+        if (::diagnosticPanel.isInitialized) {
+            diagnosticPanel.visibility = if (diagnosticsVisible) View.VISIBLE else View.GONE
+        }
+    }
+
     private fun jpegOrientation(): Int {
         val logicalId = logicalRearId ?: return 0
         val sensor = cameraManager.getCameraCharacteristics(logicalId)
             .get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        @Suppress("DEPRECATION")
         val device = when (windowManager.defaultDisplay.rotation) {
             Surface.ROTATION_90 -> 90
             Surface.ROTATION_180 -> 180
@@ -642,17 +747,21 @@ class MainActivity : Activity() {
     private fun updateLensLabels(fps: DoubleArray?) {
         for (i in 0..2) {
             val pid = physicalIds.getOrNull(i)
-            val idText = pid ?: "--"
             val focal = if (pid != null) formatFocal(pid) else "--"
-            val fpsText = if (fps != null) "${"%.1f".format(Locale.US, fps[i])} fps" else "-- fps"
-            lensLabels[i].text = "${lensNames[i]}\nID $idText · ${focal}mm\n$fpsText"
+            val fpsText = if (fpsOverlayEnabled) {
+                if (fps != null) "${"%.1f".format(Locale.US, fps[i])} fps" else "-- fps"
+            } else {
+                "${focal}mm"
+            }
+            val detail = if (fpsOverlayEnabled && pid != null) "${focal}mm · $fpsText" else fpsText
+            lensLabels[i].text = "${lensNames[i]}\n$detail"
         }
     }
 
-    private fun buildCaptureInfo(map: Map<String, Size>): String {
-        if (physicalIds.size != 3) return "Capture: max JPEG per physical camera"
+    private fun compactCaptureInfo(map: Map<String, Size>): String {
+        if (physicalIds.size != 3) return "MAX JPEG × 3"
         return physicalIds.mapIndexed { i, id -> "${lensNames[i]} ${sizeText(map[id])}" }
-            .joinToString("  |  ")
+            .joinToString("  •  ")
     }
 
     private fun formatFocal(id: String): String {
@@ -708,6 +817,26 @@ class MainActivity : Activity() {
 
     private fun setStatus(text: String) {
         runOnUiThread { if (::statusText.isInitialized) statusText.text = text }
+    }
+
+    private fun setLinkBadge(text: String) {
+        runOnUiThread { if (::linkBadge.isInitialized) linkBadge.text = text }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (firstResume) {
+            firstResume = false
+            return
+        }
+        if (
+            checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED &&
+            logicalRearId != null &&
+            !previewRunning &&
+            !capturing
+        ) {
+            mainHandler.postDelayed({ start1080Preview() }, 180L)
+        }
     }
 
     override fun onPause() {
