@@ -23,13 +23,20 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
 
 /**
- * Watches TRI // CAM's three individual JPEGs and creates one additional panorama-style contact
- * sheet in the requested order: ULTRA -> MAIN -> TELE. Individual files remain untouched.
+ * Watches TRI // CAM's three JPEGs and optionally creates one additional contact sheet in the
+ * requested order: ULTRA -> MAIN -> TELE. Output policy is user-selectable:
+ *  - individual ON + merged ON  = keep all four files
+ *  - individual ON + merged OFF = keep three originals
+ *  - individual OFF + merged ON = make the merged file, then remove the three originals
  */
 object MergedCaptureObserver {
     private const val TAG = "TriCamMerge"
     private const val MERGED_HEIGHT = 2048
     private const val JPEG_QUALITY = 95
+    private const val PREFS = "tricam_capture_output"
+    private const val PREF_INDIVIDUAL = "save_individual_3"
+    private const val PREF_MERGED = "save_merged_strip"
+
     private val namePattern = Regex(
         "^TRICAM_(\\d{8}_\\d{6}_\\d{3})_(ULTRA|MAIN|TELE)_\\d+x\\d+\\.jpg$",
         RegexOption.IGNORE_CASE
@@ -41,6 +48,22 @@ object MergedCaptureObserver {
     private val batches = ConcurrentHashMap<String, MutableMap<String, Uri>>()
     private val merging = ConcurrentHashMap.newKeySet<String>()
     private val finished = ConcurrentHashMap.newKeySet<String>()
+
+    fun saveIndividualEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_INDIVIDUAL, true)
+
+    fun saveMergedEnabled(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(PREF_MERGED, true)
+
+    fun setSaveIndividual(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(PREF_INDIVIDUAL, enabled).apply()
+    }
+
+    fun setSaveMerged(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putBoolean(PREF_MERGED, enabled).apply()
+    }
 
     fun start(context: Context) {
         if (started) return
@@ -65,6 +88,10 @@ object MergedCaptureObserver {
     }
 
     private fun inspect(uri: Uri) {
+        // If merged output is disabled the Camera2 engine's three originals are already the final
+        // output, so there is intentionally nothing for this observer to do.
+        if (!saveMergedEnabled(appContext)) return
+
         try {
             val columns = mutableListOf(MediaStore.Images.Media.DISPLAY_NAME)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -136,14 +163,36 @@ object MergedCaptureObserver {
 
             val path = saveMerged(batch, merged)
             merged.recycle()
+
+            val keepIndividuals = saveIndividualEnabled(appContext)
+            if (!keepIndividuals) {
+                var deleted = 0
+                order.forEach { lens ->
+                    val source = uris[lens] ?: return@forEach
+                    try {
+                        if (appContext.contentResolver.delete(source, null, null) > 0) deleted++
+                    } catch (t: Throwable) {
+                        Log.w(TAG, "Could not remove source $lens: ${t.message}")
+                    }
+                }
+                Log.d(TAG, "Merged-only mode: removed $deleted/3 source JPEGs")
+            }
+
             finished += batch
             batches.remove(batch)
             Log.d(TAG, "Merged ULTRA-MAIN-TELE saved: $path")
             Handler(Looper.getMainLooper()).post {
-                Toast.makeText(appContext, "3枚 + 横並び合成写真を保存しました", Toast.LENGTH_SHORT).show()
+                val message = if (keepIndividuals) {
+                    "個別3枚 + 横並びマージを保存しました"
+                } else {
+                    "横並びマージを保存しました"
+                }
+                Toast.makeText(appContext, message, Toast.LENGTH_SHORT).show()
             }
         } catch (t: Throwable) {
-            Log.e(TAG, "Merge failed for $batch", t)
+            // Never delete the individual originals when merging fails. Losing all copies because a
+            // derived image failed would be a rather impressive failure mode, even for camera code.
+            Log.e(TAG, "Merge failed for $batch; keeping originals", t)
         } finally {
             bitmaps.forEach { if (!it.isRecycled) it.recycle() }
             merging.remove(batch)
