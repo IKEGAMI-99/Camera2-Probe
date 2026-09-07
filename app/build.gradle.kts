@@ -11,8 +11,8 @@ android {
         applicationId = "com.ikegami.camera2probe"
         minSdk = 28
         targetSdk = 35
-        versionCode = 11
-        versionName = "0.5.3"
+        versionCode = 12
+        versionName = "0.6.0"
     }
 
     buildTypes {
@@ -36,4 +36,5 @@ android {
 
 dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 }
