@@ -159,7 +159,10 @@ class ControlsInitProvider : ContentProvider() {
                 .setTitle("TRI // CAM SETTINGS")
                 .setView(panel)
                 .setNegativeButton("アップデート確認") { _, _ -> AppUpdater.checkForUpdate(activity) }
-                .setNeutralButton("カメラ再起動") { _, _ -> invokeNoArg(activity, "restartCamera") }
+                .setNeutralButton("カメラ再起動") { _, _ ->
+                    invokeNoArg(activity, "restartCamera")
+                    ExposureController.reapplySoon(activity)
+                }
                 .setPositiveButton("閉じる", null)
                 .show()
         }
