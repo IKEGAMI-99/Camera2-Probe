@@ -19,9 +19,17 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:text="Initializing..."
+        android:text="Ready"
         android:textColor="#D8FFE1"
         android:textSize="13sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:text="Preview: 1920×1080 × 3"
+        android:textColor="#89C79B"
+        android:textSize="11sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -88,63 +96,19 @@
     </LinearLayout>
 
     <TextView
-        android:id="@+id/resolutionText"
+        android:id="@+id/captureInfoText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
         android:gravity="center"
-        android:text="Selected: 640x480"
+        android:text="Capture: max JPEG per physical camera"
         android:textColor="#D8FFE1"
         android:textSize="11sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal">
-
-        <Button
-            android:id="@+id/vgaButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:minHeight="42dp"
-            android:text="640×480"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/p720Button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="3dp"
-            android:layout_weight="1"
-            android:minHeight="42dp"
-            android:text="720P"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/p1080Button"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="3dp"
-            android:layout_weight="1"
-            android:minHeight="42dp"
-            android:text="1080P"
-            android:textSize="10sp" />
-
-        <Button
-            android:id="@+id/maxButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="3dp"
-            android:layout_weight="1"
-            android:minHeight="42dp"
-            android:text="MAX"
-            android:textSize="10sp" />
-    </LinearLayout>
-
-    <LinearLayout
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
         android:orientation="horizontal">
 
         <Button
@@ -155,13 +119,21 @@
             android:text="SCAN" />
 
         <Button
-            android:id="@+id/tripleButton"
+            android:id="@+id/startButton"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginStart="6dp"
             android:layout_weight="1"
-            android:text="START 3-CAM" />
+            android:text="START 1080P" />
     </LinearLayout>
+
+    <Button
+        android:id="@+id/captureButton"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:minHeight="48dp"
+        android:text="CAPTURE 3-CAM" />
 
     <Button
         android:id="@+id/stopButton"
