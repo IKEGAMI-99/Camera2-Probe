@@ -56,8 +56,6 @@ object PreviewAspectController {
         val cx = w / 2f
         val cy = h / 2f
 
-        // TextureView fills the View non-uniformly by default. Apply the inverse aspect correction
-        // plus a symmetric center crop so circles stay circular and people keep natural proportions.
         if (viewAspect < sourceAspect) {
             matrix.setScale(sourceAspect / viewAspect, 1f, cx, cy)
         } else {
@@ -84,6 +82,11 @@ object PreviewAspectController {
             vx to ny
         }
     }
+
+    // Compatibility overload for existing tap-focus call sites. All three POCO rear sensors expose
+    // the same mounting orientation in practice; MAIN is used as the safe shared reference.
+    fun mapTap(width: Int, height: Int, x: Float, y: Float): Pair<Float, Float> =
+        mapTap(width, height, x, y, 1)
 
     private fun detectLensAspects(activity: Activity): List<Float> {
         return try {
