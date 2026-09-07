@@ -19,17 +19,16 @@ import android.view.ViewGroup
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
-import java.util.Locale
 import java.util.WeakHashMap
-import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.floor
 import kotlin.math.roundToInt
 
-/** Shared AE exposure compensation for all three physical cameras. */
+/** Shared one-third-stop AE exposure compensation for all three physical cameras. */
 object ExposureController {
     private const val PREFS = "tri_cam_exposure"
     private const val KEY_EV = "ev"
-    private const val UI_STEP_EV = 0.1f
     private val panels = WeakHashMap<TriCamActivity, View>()
     private val pending = WeakHashMap<TriCamActivity, Runnable>()
 
@@ -40,15 +39,17 @@ object ExposureController {
         }
         val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
         val root = content.getChildAt(0) as? LinearLayout ?: return
+        val dock = activity.findViewById<View>(R.id.bottomActionBar) ?: return
 
         val spec = queryCommonRange(activity)
-        val saved = currentEv(activity).coerceIn(spec.minEv, spec.maxEv)
-        storeEv(activity, saved)
+        val savedThird = evToThird(currentEv(activity)).coerceIn(spec.minThird, spec.maxThird)
+        val savedEv = savedThird / 3f
+        storeEv(activity, savedEv)
 
         val panel = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(activity, 14), dp(activity, 8), dp(activity, 14), dp(activity, 8))
+            setPadding(dp(activity, 14), dp(activity, 7), dp(activity, 14), dp(activity, 6))
             background = GradientDrawable().apply {
                 cornerRadius = dp(activity, 18).toFloat()
                 setColor(Color.rgb(8, 18, 31))
@@ -61,13 +62,13 @@ object ExposureController {
             gravity = Gravity.CENTER_VERTICAL
         }
         val title = TextView(activity).apply {
-            text = "EXPOSURE · ALL 3 CAMERAS"
-            textSize = 10f
+            text = "EXPOSURE · ALL 3 CAMERAS · 1/3 EV"
+            textSize = 9.5f
             setTextColor(Color.rgb(190, 219, 231))
-            letterSpacing = 0.08f
+            letterSpacing = 0.06f
         }
         val valueText = TextView(activity).apply {
-            textSize = 11f
+            textSize = 10.5f
             setTextColor(Color.rgb(91, 246, 201))
             gravity = Gravity.END
         }
@@ -76,43 +77,73 @@ object ExposureController {
         panel.addView(header)
 
         val seek = SeekBar(activity).apply {
-            max = (((spec.maxEv - spec.minEv) / UI_STEP_EV).roundToInt()).coerceAtLeast(1)
-            progress = (((saved - spec.minEv) / UI_STEP_EV).roundToInt()).coerceIn(0, max)
+            max = (spec.maxThird - spec.minThird).coerceAtLeast(1)
+            progress = (savedThird - spec.minThird).coerceIn(0, max)
+            splitTrack = false
+            tickMark = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setSize(dp(activity, 3), dp(activity, 3))
+                setColor(Color.rgb(74, 111, 126))
+            }
         }
-        panel.addView(seek, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(activity, 38)))
+        panel.addView(seek, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(activity, 34)))
 
-        fun evForProgress(progress: Int): Float =
-            (spec.minEv + progress * UI_STEP_EV).coerceIn(spec.minEv, spec.maxEv)
-
-        fun updateValue(ev: Float) {
-            valueText.text = String.format(Locale.US, "%+.1f EV", ev)
+        val scale = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
         }
-        updateValue(saved)
+        val minText = TextView(activity).apply {
+            text = formatThird(spec.minThird)
+            textSize = 7f
+            setTextColor(Color.rgb(75, 96, 112))
+        }
+        val centerText = TextView(activity).apply {
+            text = "●  0 EV  ·  each dot = 1/3"
+            textSize = 7f
+            gravity = Gravity.CENTER
+            setTextColor(Color.rgb(91, 126, 140))
+        }
+        val maxText = TextView(activity).apply {
+            text = formatThird(spec.maxThird)
+            textSize = 7f
+            gravity = Gravity.END
+            setTextColor(Color.rgb(75, 96, 112))
+        }
+        scale.addView(minText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        scale.addView(centerText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 2f))
+        scale.addView(maxText, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        panel.addView(scale)
+
+        fun thirdForProgress(progress: Int): Int =
+            (spec.minThird + progress).coerceIn(spec.minThird, spec.maxThird)
+        fun updateValue(third: Int) { valueText.text = formatThird(third) }
+        updateValue(savedThird)
 
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
                 if (!fromUser) return
-                val ev = evForProgress(progress)
-                updateValue(ev)
+                val third = thirdForProgress(progress)
+                val ev = third / 3f
+                updateValue(third)
                 storeEv(activity, ev)
-                val old = pending.remove(activity)
-                if (old != null) activity.window.decorView.removeCallbacks(old)
+                pending.remove(activity)?.let { activity.window.decorView.removeCallbacks(it) }
                 val task = Runnable { apply(activity, ev) }
                 pending[activity] = task
-                activity.window.decorView.postDelayed(task, 45L)
+                activity.window.decorView.postDelayed(task, 35L)
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
             override fun onStopTrackingTouch(seekBar: SeekBar?) {
-                apply(activity, evForProgress(seek.progress))
+                val third = thirdForProgress(seek.progress)
+                seek.progress = third - spec.minThird
+                apply(activity, third / 3f)
             }
         })
 
-        val diagnostic = activity.findViewById<View>(R.id.diagnosticPanel)
-        val insertIndex = root.indexOfChild(diagnostic).let { if (it >= 0) it else root.childCount }
+        val insertIndex = root.indexOfChild(dock).let { if (it >= 0) it else root.childCount }
         root.addView(
             panel,
             insertIndex,
-            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(activity, 72)).apply {
+            LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(activity, 84)).apply {
                 topMargin = dp(activity, 8)
             }
         )
@@ -133,27 +164,29 @@ object ExposureController {
     fun applyToBuilder(activity: TriCamActivity, builder: CaptureRequest.Builder, physicalIds: List<String>) {
         val ev = currentEv(activity)
         val manager = activity.getSystemService(CameraManager::class.java)
-
         val logicalId = runCatching { getField<String?>(activity, "logicalRearId") }.getOrNull()
         if (logicalId != null) {
             runCatching {
-                val chars = manager.getCameraCharacteristics(logicalId)
-                val idx = evToIndex(ev, chars)
-                builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, idx)
+                builder.set(
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    evToIndex(ev, manager.getCameraCharacteristics(logicalId))
+                )
             }
         }
-
         physicalIds.forEach { pid ->
             runCatching {
-                val chars = manager.getCameraCharacteristics(pid)
-                val idx = evToIndex(ev, chars)
-                builder.setPhysicalCameraKey(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, idx, pid)
+                builder.setPhysicalCameraKey(
+                    CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION,
+                    evToIndex(ev, manager.getCameraCharacteristics(pid)),
+                    pid
+                )
             }
         }
     }
 
     fun apply(activity: TriCamActivity, ev: Float) {
-        storeEv(activity, ev)
+        val snapped = evToThird(ev) / 3f
+        storeEv(activity, snapped)
         try {
             val physicalIds = getField<List<String>>(activity, "physicalIds")
             val camera = getField<CameraDevice?>(activity, "cameraDevice") ?: return
@@ -182,11 +215,7 @@ object ExposureController {
                     session.setRepeatingRequest(
                         b.build(),
                         object : CameraCaptureSession.CaptureCallback() {
-                            override fun onCaptureCompleted(
-                                session: CameraCaptureSession,
-                                request: CaptureRequest,
-                                result: TotalCaptureResult
-                            ) {
+                            override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
                                 invokeUpdate3A(activity, result)
                             }
                         },
@@ -199,7 +228,7 @@ object ExposureController {
         }
     }
 
-    private data class Spec(val minEv: Float, val maxEv: Float)
+    private data class Spec(val minThird: Int, val maxThird: Int)
 
     private fun queryCommonRange(activity: TriCamActivity): Spec {
         return try {
@@ -222,12 +251,14 @@ object ExposureController {
                 val c = manager.getCameraCharacteristics(id)
                 val range = c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: return@forEach
                 val step = stepFloat(c.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP))
-                minEv = max(minEv, range.lower * step)
-                maxEv = min(maxEv, range.upper * step)
+                minEv = maxOf(minEv, range.lower * step)
+                maxEv = minOf(maxEv, range.upper * step)
             }
-            if (minEv >= maxEv) Spec(-2f, 2f) else Spec(minEv, maxEv)
+            val minThird = ceil(minEv * 3f).toInt()
+            val maxThird = floor(maxEv * 3f).toInt()
+            if (minThird >= maxThird) Spec(-6, 6) else Spec(minThird, maxThird)
         } catch (_: Throwable) {
-            Spec(-2f, 2f)
+            Spec(-6, 6)
         }
     }
 
@@ -235,6 +266,22 @@ object ExposureController {
         val range: Range<Int> = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE) ?: Range(0, 0)
         val step = stepFloat(chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)).takeIf { it > 0f } ?: 1f
         return (ev / step).roundToInt().coerceIn(range.lower, range.upper)
+    }
+
+    private fun evToThird(ev: Float): Int = (ev * 3f).roundToInt()
+
+    private fun formatThird(third: Int): String {
+        if (third == 0) return "0 EV"
+        val sign = if (third > 0) "+" else "−"
+        val a = abs(third)
+        val whole = a / 3
+        val rem = a % 3
+        val body = when (rem) {
+            0 -> whole.toString()
+            1 -> if (whole == 0) "⅓" else "$whole⅓"
+            else -> if (whole == 0) "⅔" else "$whole⅔"
+        }
+        return "$sign$body EV"
     }
 
     private fun stepFloat(r: Rational?): Float =
