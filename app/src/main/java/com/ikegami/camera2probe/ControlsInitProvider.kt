@@ -33,7 +33,9 @@ class ControlsInitProvider : ContentProvider() {
             activity.window.decorView.post {
                 if (activity.isFinishing) return@post
 
+                PreviewLayoutController.install(activity)
                 PreviewAspectController.install(activity)
+                ExposureController.install(activity)
                 AppUpdater.resumePendingInstall(activity)
 
                 if (installed[activity] == true) return@post
@@ -49,15 +51,11 @@ class ControlsInitProvider : ContentProvider() {
                     showEnhancedSettings(activity)
                 }
 
-                // Explicitly launch a real Gallery/Photos application instead of a picker.
                 activity.findViewById<View>(R.id.galleryButton)?.setOnClickListener {
                     GalleryLauncher.open(activity)
                 }
 
-                // Adds visible flash + pulse feedback while returning false from touch handling, so
-                // TriCamActivity's existing capture OnClickListener remains the source of truth.
                 ShutterEffects.install(activity)
-
                 installed[activity] = true
             }
         }
