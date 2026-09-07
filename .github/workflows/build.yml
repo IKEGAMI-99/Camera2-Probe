@@ -32,7 +32,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Install stable prototype debug key
+      - name: Install stable signing key
         run: |
           mkdir -p "$HOME/.android"
           base64 -d ci/debug.keystore.b64 > "$HOME/.android/debug.keystore"
@@ -43,12 +43,12 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
 
-      - name: Upload APK
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Camera2-Probe-debug
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: TRI-CAM-release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
