@@ -9,16 +9,16 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
-import android.widget.TextView
 import java.util.WeakHashMap
 
 /**
- * Small startup provider that layers UI controls onto TriCamActivity without disturbing the
- * camera engine or the existing TapFocusApplication lifecycle code.
+ * Startup provider for UI controls and non-camera helpers. Keeping these concerns outside the
+ * proven camera engine makes it much harder for a UI/update feature to destabilize Camera2.
  */
 class ControlsInitProvider : ContentProvider() {
     override fun onCreate(): Boolean {
         val app = context?.applicationContext as? Application ?: return true
+        MergedCaptureObserver.start(app)
         app.registerActivityLifecycleCallbacks(Callbacks())
         return true
     }
@@ -27,9 +27,16 @@ class ControlsInitProvider : ContentProvider() {
         private val installed = WeakHashMap<TriCamActivity, Boolean>()
 
         override fun onActivityResumed(activity: Activity) {
-            if (activity !is TriCamActivity || installed[activity] == true) return
+            if (activity !is TriCamActivity) return
             activity.window.decorView.post {
-                if (activity.isFinishing || installed[activity] == true) return@post
+                if (activity.isFinishing) return@post
+
+                // These need to run on every resume. In particular, updater resume is what turns
+                // the one-time unknown-source permission screen into a seamless update flow.
+                PreviewAspectController.install(activity)
+                AppUpdater.resumePendingInstall(activity)
+
+                if (installed[activity] == true) return@post
                 activity.findViewById<View>(R.id.allAfButton)?.setOnClickListener {
                     it.animate().scaleX(0.88f).scaleY(0.88f).setDuration(70L).withEndAction {
                         it.animate().scaleX(1f).scaleY(1f).setDuration(120L).start()
