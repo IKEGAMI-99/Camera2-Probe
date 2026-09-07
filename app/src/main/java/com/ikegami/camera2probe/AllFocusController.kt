@@ -26,19 +26,19 @@ object AllFocusController {
             handler.post {
                 try {
                     val cancel = buildRequest(
-                        camera, surfaces, physicalIds, afRequiredById,
+                        activity, camera, surfaces, physicalIds, afRequiredById,
                         CaptureRequest.CONTROL_AF_TRIGGER_CANCEL
                     )
                     session.capture(cancel, null, handler)
 
                     val start = buildRequest(
-                        camera, surfaces, physicalIds, afRequiredById,
+                        activity, camera, surfaces, physicalIds, afRequiredById,
                         CaptureRequest.CONTROL_AF_TRIGGER_START
                     )
                     session.capture(start, null, handler)
 
                     val hold = buildRequest(
-                        camera, surfaces, physicalIds, afRequiredById,
+                        activity, camera, surfaces, physicalIds, afRequiredById,
                         CaptureRequest.CONTROL_AF_TRIGGER_IDLE
                     )
                     session.setRepeatingRequest(
@@ -59,7 +59,7 @@ object AllFocusController {
                         activity.findViewById<TextView>(R.id.statusText).text = "ALL AF · MAIN + TELE SCANNING"
                         activity.findViewById<TextView>(R.id.linkBadge).text = "ALL AF"
                     }
-                    Log.d(TAG, "Triggered AF on every focus-capable physical camera; fixed-focus lenses remain AF OFF")
+                    Log.d(TAG, "Triggered AF on every focus-capable physical camera; shared EV preserved")
                 } catch (t: Throwable) {
                     Log.e(TAG, "ALL AF trigger failed", t)
                 }
@@ -70,6 +70,7 @@ object AllFocusController {
     }
 
     private fun buildRequest(
+        activity: TriCamActivity,
         camera: CameraDevice,
         surfaces: List<Surface>,
         physicalIds: List<String>,
@@ -107,6 +108,8 @@ object AllFocusController {
                 try { b.setPhysicalCameraKey(CaptureRequest.CONTROL_AF_TRIGGER, trigger, pid) } catch (_: Throwable) {}
             }
         }
+
+        ExposureController.applyToBuilder(activity, b, physicalIds)
         return b.build()
     }
 
