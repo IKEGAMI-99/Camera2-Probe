@@ -30,7 +30,7 @@ jobs:
           yes | sdkmanager --licenses >/dev/null || true
           sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
 
-      - name: Install stable prototype debug key
+      - name: Install stable signing key
         run: |
           mkdir -p "$HOME/.android"
           base64 -d ci/debug.keystore.b64 > "$HOME/.android/debug.keystore"
@@ -41,8 +41,8 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Build signed debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build signed release APK
+        run: gradle --no-daemon assembleRelease
 
       - name: Resolve version
         id: version
@@ -50,7 +50,7 @@ jobs:
         run: |
           VERSION_NAME=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
           echo "name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
-          cp app/build/outputs/apk/debug/app-debug.apk "TRI-CAM-v${VERSION_NAME}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "TRI-CAM-v${VERSION_NAME}.apk"
 
       - name: Publish GitHub Release
         env:
@@ -64,9 +64,9 @@ jobs:
             gh release view "$TAG" --json assets --jq '.assets[].name' | while read -r asset; do
               [ -n "$asset" ] && gh release delete-asset "$TAG" "$asset" -y || true
             done
-            gh release edit "$TAG" --title "TRI // CAM v${VERSION_NAME}" --notes "Personal sideload build for TRI // CAM."
+            gh release edit "$TAG" --title "TRI // CAM v${VERSION_NAME}" --notes "Signed release build for TRI // CAM."
           else
-            gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "TRI // CAM v${VERSION_NAME}" --notes "Personal sideload build for TRI // CAM." --latest
+            gh release create "$TAG" "$APK" --target "$GITHUB_SHA" --title "TRI // CAM v${VERSION_NAME}" --notes "Signed release build for TRI // CAM." --latest
             exit 0
           fi
           gh release upload "$TAG" "$APK" --clobber
